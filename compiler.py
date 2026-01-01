@@ -341,6 +341,17 @@ class Parser:
         else:
             self.errors.append(f"syntax error, missing {expected}")
             return Node(f"(SYMBOL, {expected})")
+            
+    def match_type(self, expected_type):
+        tok = self.lookahead()
+        if tok[0] == expected_type:
+            node = Node(f"({tok[0]}, {tok[1]})")
+            self.advance()
+            return node
+        else:
+            self.errors.append(f"syntax error, missing {expected_type}")
+            return Node(f"({expected_type}, )")
+        
 
     def epsilon(self):
         return Node("epsilon")
@@ -421,17 +432,86 @@ class Parser:
     
     def Statement_list(self):
         node = Node("Statement-list")
-        if self.lookahead()[0] in {"ID", "NUM"} or self.lookahead()[1] in {"(", ";"}:
+
+        tok_type, tok_val = self.lookahead()
+
+        if (
+            tok_type in {"ID", "NUM"} or
+            tok_val in {"(", ";", "{", "if", "for", "return", "break"}
+        ):
             node.add(self.Statement())
             node.add(self.Statement_list())
         else:
+            # FOLLOW(Statement-list) → }
             node.add(self.epsilon())
+
         return node
+
 
 
     def Statement(self):
         node = Node("Statement")
-        node.add(self.Expression_stmt())
+        la = self.lookahead()[1]
+
+        if la == "{":
+            node.add(self.Compound_stmt())
+        elif la == "if":
+            node.add(self.Selection_stmt())
+        elif la == "for":
+            node.add(self.Iteration_stmt())
+        elif la == "return":
+            node.add(self.Return_stmt())
+        else:
+            node.add(self.Expression_stmt())
+
+        return node
+        
+    def Selection_stmt(self):
+        node = Node("Selection-stmt")
+        node.add(self.match("if"))
+        node.add(self.match("("))
+        node.add(self.Expression())
+        node.add(self.match(")"))
+        node.add(self.Statement())
+        node.add(self.Else_stmt())
+        return node
+
+    def Else_stmt(self):
+        node = Node("Else-stmt")
+        if self.lookahead()[1] == "else":
+            node.add(self.match("else"))
+            node.add(self.Statement())
+        else:
+            node.add(self.epsilon())
+        return node
+    
+    def Iteration_stmt(self):
+        node = Node("Iteration-stmt")
+        node.add(self.match("for"))
+        node.add(self.match("("))
+        node.add(self.Expression())
+        node.add(self.match(";"))
+        node.add(self.Expression())
+        node.add(self.match(";"))
+        node.add(self.Expression())
+        node.add(self.match(")"))
+        node.add(self.Compound_stmt())
+        return node
+
+        
+    def Return_stmt(self):
+        node = Node("Return-stmt")
+        node.add(self.match("return"))
+        node.add(self.Return_stmt_prime())
+        return node
+
+    def Return_stmt_prime(self):
+        node = Node("Return-stmt-prime")
+        if self.lookahead()[1] == ";":
+            node.add(self.match(";"))
+        else:
+            node.add(self.Expression())
+            node.add(self.match(";"))
         return node
 
 
@@ -448,11 +528,182 @@ class Parser:
         node = Node("Expression")
 
         if self.lookahead()[0] == "ID":
-            node.add(self.match("ID"))
+            node.add(self.match_type("ID"))
             node.add(self.B())
         else:
             node.add(self.Simple_expression_zegond())
 
+        return node
+    
+    def B(self):
+        node = Node("B")
+        if self.lookahead()[1] == "=":
+            node.add(self.match("="))
+            node.add(self.Expression())
+        else:
+            node.add(self.Simple_expression_prime())
+        return node
+
+    def Simple_expression_prime(self):
+        n = Node("Simple-expression-prime")
+        n.add(self.Additive_expression_prime())
+        n.add(self.C())
+        return n
+    
+    def Simple_expression_zegond(self):
+        node = Node("Simple-expression-zegond")
+        node.add(self.Additive_expression_zegond())
+        node.add(self.C())
+        return node
+    
+    def C(self):
+        node = Node("C")
+        if self.lookahead()[1] in {"<", "=="}:
+            node.add(self.match(self.lookahead()[1]))
+            node.add(self.Additive_expression())
+        else:
+            node.add(self.epsilon())
+        return node
+    
+    def Additive_expression(self):
+        n = Node("Additive-expression")
+        n.add(self.Term())
+        n.add(self.D())
+        return n
+    
+    def Additive_expression_prime(self):
+        n = Node("Additive-expression-prime")
+        n.add(self.Term_prime())
+        n.add(self.D())
+        return n
+    
+    def Additive_expression_zegond(self):
+        node = Node("Additive-expression-zegond")
+        node.add(self.Term_zegond())
+        node.add(self.D())
+        return node
+
+    def D(self):
+        node = Node("D")
+        if self.lookahead()[1] in {"+", "-"}:
+            node.add(self.Addop())
+            node.add(self.Term())
+            node.add(self.D())
+        else:
+            node.add(self.epsilon())
+        return node
+
+
+    def Addop(self):
+        n = Node("Addop")
+        n.add(self.match(self.lookahead()[1]))
+        return n
+
+    def Term(self):
+        n = Node("Term")
+        n.add(self.Signed_factor())
+        n.add(self.G())
+        return n
+    
+    def Signed_factor(self):
+        node = Node("Signed-factor")
+        if self.lookahead()[1] in {"+", "-"}:
+            node.add(self.match(self.lookahead()[1]))
+            node.add(self.Factor())
+        else:
+            node.add(self.Factor())
+        return node
+
+    def Factor(self):
+        node = Node("Factor")
+        if self.lookahead()[1] == "(":
+            node.add(self.match("("))
+            node.add(self.Expression())
+            node.add(self.match(")"))
+        elif self.lookahead()[0] == "ID":
+            node.add(self.match_type("ID"))
+            node.add(self.Var_call_prime())
+        else:
+            node.add(self.match_type("NUM"))
+        return node
+
+
+    def Term_prime(self):
+        n = Node("Term-prime")
+        n.add(self.Factor_prime())
+        n.add(self.G())
+        return n
+
+    def Term_zegond(self):
+        node = Node("Term-zegond")
+        node.add(self.Signed_factor_zegond())
+        node.add(self.G())
+        return node
+
+    def G(self):
+        node = Node("G")
+        if self.lookahead()[1] in {"*", "/"}:
+            node.add(self.match(self.lookahead()[1]))
+            node.add(self.Signed_factor())
+            node.add(self.G())
+        else:
+            node.add(self.epsilon())
+        return node
+
+    def Factor_prime(self):
+        node = Node("Factor-prime")
+        if self.lookahead()[1] == "(":
+            node.add(self.match("("))
+            node.add(self.Args())
+            node.add(self.match(")"))
+        else:
+            node.add(self.epsilon())
+        return node
+
+
+        
+    def Signed_factor_zegond(self):
+        node = Node("Signed-factor-zegond")
+        node.add(self.Factor_zegond())
+        return node
+
+    def Factor_zegond(self):
+        node = Node("Factor-zegond")
+        if self.lookahead()[0] == "NUM":
+            node.add(Node(f"(NUM, {self.lookahead()[1]})"))
+            self.advance()
+        else:
+            node.add(self.match("("))
+            node.add(self.Expression())
+            node.add(self.match(")"))
+        return node
+
+    def Var_prime(self):
+        node = Node("Var_prime")
+        if self.lookahead()[1] == "[":
+            node.add(self.match("["))
+            node.add(self.Expression())
+            node.add(self.match("]"))
+        else:
+            node.add(self.epsilon())    
+        return node
+
+    def Var_call_prime(self):
+        node = Node("Var-call-prime")
+        if self.lookahead()[1] == "(":
+            node.add(self.match("("))
+            node.add(self.Args())
+            node.add(self.match(")"))
+        else:
+            node.add(self.Var_prime())
+        return node
+
+    def Args(self):
+        node = Node("Args")
+        if self.lookahead()[1] == ")":
+            node.add(self.epsilon())
+        else:
+            node.add(self.Arg_list())
         return node
 
 
