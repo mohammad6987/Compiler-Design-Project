@@ -296,7 +296,6 @@ class Scanner:
         self.write_symbol_table()
 
 
-
 class Node:
     def __init__(self, name):
         self.name = name
@@ -311,9 +310,10 @@ class Node:
         else:
             f.write(prefix + ("└── " if is_last else "├── ") + self.name + "\n")
 
-        new_prefix = prefix + ("    " if is_last else "│   ")
-        for i, c in enumerate(self.children):
-            c.print(f, new_prefix, i == len(self.children) - 1)
+        child_prefix = prefix + ("    " if is_last else "│   ")
+
+        for i, child in enumerate(self.children):
+            child.print(f, child_prefix, i == len(self.children) - 1)
 
 
 # =========================================================
@@ -397,7 +397,13 @@ class Parser:
 
     def Var_declaration_prime(self):
         node = Node("Var-declaration-prime")
-        node.add(self.match(";"))
+        if self.lookahead()[1] == "[":
+            node.add(self.match("["))
+            node.add(self.match_type("NUM"))
+            node.add(self.match("]"))
+            node.add(self.match(";"))
+        else:
+            node.add(self.match(";"))
         return node
 
     def Fun_declaration_prime(self):
@@ -418,9 +424,44 @@ class Parser:
     def Params(self):
         node = Node("Params")
         if self.lookahead()[1] == "void":
-            node.add(Node("(KEYWORD, void)"))
+            node.add(self.match("void"))
+        else:
+            node.add(self.match("int"))
+            tok = self.lookahead()
+            node.add(Node(f"(ID, {tok[1]})"))
             self.advance()
+            node.add(self.Param_prime())
+            node.add(self.Param_list())
         return node
+
+
+    def Param_list(self):
+        node = Node("Param-list")
+        if self.lookahead()[1] == ",":
+            node.add(self.match(","))
+            node.add(self.Param())
+            node.add(self.Param_list())
+        else:
+            node.add(self.epsilon())
+        return node
+
+
+    def Param(self):
+        node = Node("Param")
+        node.add(self.Declaration_initial())
+        node.add(self.Param_prime())
+        return node
+
+
+    def Param_prime(self):
+        node = Node("Param-prime")
+        if self.lookahead()[1] == "[":
+            node.add(self.match("["))
+            node.add(self.match("]"))
+        else:
+            node.add(self.epsilon())
+        return node
+
 
     def Compound_stmt(self):
         node = Node("Compound-stmt")
@@ -517,32 +558,56 @@ class Parser:
 
     def Expression_stmt(self):
         node = Node("Expression-stmt")
-        if self.lookahead()[1] == ";":
+        if self.lookahead()[1] == "break":
+            node.add(self.match("break"))
+            node.add(self.match(";"))
+        elif self.lookahead()[1] == ";":
             node.add(self.match(";"))
         else:
             node.add(self.Expression())
             node.add(self.match(";"))
         return node
+
 
     def Expression(self):
         node = Node("Expression")
 
         if self.lookahead()[0] == "ID":
-            node.add(self.match_type("ID"))
+            tok = self.lookahead()
+            node.add(Node(f"(ID, {tok[1]})"))
+            self.advance()
             node.add(self.B())
         else:
             node.add(self.Simple_expression_zegond())
 
         return node
-    
+        
     def B(self):
         node = Node("B")
         if self.lookahead()[1] == "=":
             node.add(self.match("="))
             node.add(self.Expression())
+        elif self.lookahead()[1] == "[":
+            node.add(self.match("["))
+            node.add(self.Expression())
+            node.add(self.match("]"))
+            node.add(self.H())
         else:
             node.add(self.Simple_expression_prime())
         return node
+
+
+    def H(self):
+        node = Node("H")
+        if self.lookahead()[1] == "=":
+            node.add(self.match("="))
+            node.add(self.Expression())
+        else:
+            node.add(self.G())
+            node.add(self.D())
+            node.add(self.C())
+        return node
+
 
     def Simple_expression_prime(self):
         n = Node("Simple-expression-prime")
@@ -556,15 +621,21 @@ class Parser:
         node.add(self.C())
         return node
     
+    def Relop(self):
+        node = Node("Relop")
+        node.add(self.match(self.lookahead()[1]))
+        return node
+
+
     def C(self):
         node = Node("C")
         if self.lookahead()[1] in {"<", "=="}:
-            node.add(self.match(self.lookahead()[1]))
+            node.add(self.Relop())
             node.add(self.Additive_expression())
         else:
             node.add(self.epsilon())
         return node
-    
+
     def Additive_expression(self):
         n = Node("Additive-expression")
         n.add(self.Term())
@@ -621,7 +692,9 @@ class Parser:
             node.add(self.Expression())
             node.add(self.match(")"))
         elif self.lookahead()[0] == "ID":
-            node.add(self.match_type("ID"))
+            tok = self.lookahead()
+            node.add(Node(f"(ID, {tok[1]})"))
+            self.advance()
             node.add(self.Var_call_prime())
         else:
             node.add(self.match_type("NUM"))
@@ -679,7 +752,7 @@ class Parser:
         return node
 
     def Var_prime(self):
-        node = Node("Var_prime")
+        node = Node("Var-prime")
         if self.lookahead()[1] == "[":
             node.add(self.match("["))
             node.add(self.Expression())
@@ -705,6 +778,24 @@ class Parser:
         else:
             node.add(self.Arg_list())
         return node
+
+    def Arg_list(self):
+        node = Node("Arg-list")
+        node.add(self.Expression())
+        node.add(self.Arg_list_prime())
+        return node
+
+
+    def Arg_list_prime(self):
+        node = Node("Arg-list-prime")
+        if self.lookahead()[1] == ",":
+            node.add(self.match(","))
+            node.add(self.Expression())
+            node.add(self.Arg_list_prime())
+        else:
+            node.add(self.epsilon())
+        return node
+    
 
 
 
