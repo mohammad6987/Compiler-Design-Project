@@ -325,6 +325,30 @@ class Parser:
         self.tokens = tokens
         self.pos = 0
         self.errors = []
+        self.follow = {
+            "Program": {"$"},
+            "Declaration-list": {"$", "}"},
+            "Statement-list": {"}"},
+            "Statement": {"}", "else"},
+            "Expression": {";", ")", "]", ","},
+            "Return-stmt-prime": {"}"},
+        }
+
+
+    def synchronize(self, sync_set):
+        while True:
+            token = self.lookahead()
+
+            if token[1] in sync_set or token[0] == "$":
+                return
+
+            self.advance()
+
+
+    def panic(self, follow_set):
+        while self.lookahead()[1] not in follow_set and self.lookahead()[1] != "$":
+            self.advance()
+
 
     def lookahead(self):
         return self.tokens[self.pos]
@@ -338,9 +362,9 @@ class Parser:
             node = Node(f"({tok[0]}, {tok[1]})")
             self.advance()
             return node
-        else:
-            self.errors.append(f"syntax error, missing {expected}")
-            return Node(f"(SYMBOL, {expected})")
+        self.errors.append(f"syntax error, missing {expected}")
+        self.panic({expected})
+        return Node(f"(SYMBOL, {expected})")
             
     def match_type(self, expected_type):
         tok = self.lookahead()
@@ -474,19 +498,14 @@ class Parser:
     def Statement_list(self):
         node = Node("Statement-list")
 
-        tok_type, tok_val = self.lookahead()
-
-        if (
-            tok_type in {"ID", "NUM"} or
-            tok_val in {"(", ";", "{", "if", "for", "return", "break"}
-        ):
+        if self.lookahead()[1] == "}":
+            node.add(self.epsilon())
+        else:
             node.add(self.Statement())
             node.add(self.Statement_list())
-        else:
-            # FOLLOW(Statement-list) → }
-            node.add(self.epsilon())
 
         return node
+
 
 
 
@@ -558,30 +577,46 @@ class Parser:
 
     def Expression_stmt(self):
         node = Node("Expression-stmt")
+
         if self.lookahead()[1] == "break":
             node.add(self.match("break"))
             node.add(self.match(";"))
+
         elif self.lookahead()[1] == ";":
             node.add(self.match(";"))
-        else:
+
+        elif self.lookahead()[0] in {"ID", "NUM"} or self.lookahead()[1] in {"(", "+", "-"}:
             node.add(self.Expression())
             node.add(self.match(";"))
+
+        else:
+            # panic mode recovery
+            self.errors.append("illegal start of expression-stmt")
+            self.synchronize({";"})
+            if self.lookahead()[1] == ";":
+                node.add(self.match(";"))
+
         return node
+
 
 
     def Expression(self):
         node = Node("Expression")
+        la_type, la_val = self.lookahead()
 
-        if self.lookahead()[0] == "ID":
-            tok = self.lookahead()
-            node.add(Node(f"(ID, {tok[1]})"))
+        if la_type == "ID":
+            node.add(Node(f"(ID, {la_val})"))
             self.advance()
             node.add(self.B())
-        else:
+        elif la_val in {"(", "+", "-"} or la_type == "NUM":
             node.add(self.Simple_expression_zegond())
+        else:
+            self.errors.append("syntax error, illegal Expression")
+            self.panic(self.follow["Expression"])
+            node.add(self.epsilon())
 
         return node
-        
+
     def B(self):
         node = Node("B")
         if self.lookahead()[1] == "=":
@@ -623,8 +658,14 @@ class Parser:
     
     def Relop(self):
         node = Node("Relop")
-        node.add(self.match(self.lookahead()[1]))
+        if self.lookahead()[1] in {"==", "<"}:
+            node.add(self.match(self.lookahead()[1]))
+        else:
+            self.errors.append("syntax error, missing relop")
+            self.panic(self.follow["Expression"])
+            node.add(self.epsilon())
         return node
+
 
 
     def C(self):
@@ -666,9 +707,14 @@ class Parser:
 
 
     def Addop(self):
-        n = Node("Addop")
-        n.add(self.match(self.lookahead()[1]))
-        return n
+        node = Node("Addop")
+        if self.lookahead()[1] in {"+", "-"}:
+            node.add(self.match(self.lookahead()[1]))
+        else:
+            self.errors.append("syntax error, missing addop")
+            node.add(self.epsilon())
+        return node
+
 
     def Term(self):
         n = Node("Term")
@@ -813,7 +859,6 @@ def main():
 
     scanner.scan()
 
-    # ---- FLATTEN TOKENS (CRITICAL FIX) ----
     tokens = []
     for ln in sorted(scanner.tokens_per_line):
         tokens.extend(scanner.tokens_per_line[ln])
