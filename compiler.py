@@ -37,7 +37,7 @@ class Scanner:
     def record_token(self, ttype, lexeme):
         if self.lineno not in self.tokens_per_line:
             self.tokens_per_line[self.lineno] = []
-        self.tokens_per_line[self.lineno].append((ttype, lexeme))
+        self.tokens_per_line[self.lineno].append((ttype, lexeme , self.lineno))
 
         if ttype in ("ID", "KEYWORD") and lexeme not in self.symbol_table_set:
             self.symbol_table.append(lexeme)
@@ -362,7 +362,7 @@ class Parser:
             node = Node(f"({tok[0]}, {tok[1]})")
             self.advance()
             return node
-        self.errors.append(f"syntax error, missing {expected}")
+        self.errors.append(f"#{self.lookahead()[2]} :syntax error, missing {expected}")
         self.panic({expected})
         return Node(f"(SYMBOL, {expected})")
             
@@ -373,7 +373,7 @@ class Parser:
             self.advance()
             return node
         else:
-            self.errors.append(f"syntax error, missing {expected_type}")
+            self.errors.append(f"#{self.lookahead()[2]} :syntax error, missing {expected_type}")
             return Node(f"({expected_type}, )")
         
 
@@ -385,6 +385,12 @@ class Parser:
     def Program(self):
         node = Node("Program")
         node.add(self.Declaration_list())
+
+        if self.lookahead()[1] != "$":
+            self.errors.append(
+                f"#{self.lookahead()[2]} : syntax error, illegal {self.lookahead()[1]}"
+            )
+
         node.add(Node("$"))
         return node
 
@@ -577,32 +583,30 @@ class Parser:
 
     def Expression_stmt(self):
         node = Node("Expression-stmt")
+        print(self.lookahead())
+        la_type, la_val , la_line = self.lookahead()
 
-        if self.lookahead()[1] == "break":
-            node.add(self.match("break"))
+        if la_val == ";":
             node.add(self.match(";"))
+            return node
 
-        elif self.lookahead()[1] == ";":
-            node.add(self.match(";"))
-
-        elif self.lookahead()[0] in {"ID", "NUM"} or self.lookahead()[1] in {"(", "+", "-"}:
+        if la_type in {"ID", "NUM"} or la_val in {"(", "+", "-"}:
             node.add(self.Expression())
             node.add(self.match(";"))
+            return node
 
-        else:
-            # panic mode recovery
-            self.errors.append("illegal start of expression-stmt")
-            self.synchronize({";"})
-            if self.lookahead()[1] == ";":
-                node.add(self.match(";"))
-
+        self.errors.append(f"#{la_line} : syntax error , illegal {la_val}")
+        self.synchronize({";"})
+        if self.lookahead()[1] == ";":
+            node.add(self.match(";"))
         return node
+
 
 
 
     def Expression(self):
         node = Node("Expression")
-        la_type, la_val = self.lookahead()
+        la_type, la_val , la_line = self.lookahead()
 
         if la_type == "ID":
             node.add(Node(f"(ID, {la_val})"))
@@ -611,7 +615,7 @@ class Parser:
         elif la_val in {"(", "+", "-"} or la_type == "NUM":
             node.add(self.Simple_expression_zegond())
         else:
-            self.errors.append("syntax error, illegal Expression")
+            self.errors.append(f"#{self.lookahead()[2]} :syntax error, illegal Expression")
             self.panic(self.follow["Expression"])
             node.add(self.epsilon())
 
@@ -661,7 +665,7 @@ class Parser:
         if self.lookahead()[1] in {"==", "<"}:
             node.add(self.match(self.lookahead()[1]))
         else:
-            self.errors.append("syntax error, missing relop")
+            self.errors.append(f"#{self.lookahead()[2]} :syntax error, missing relop")
             self.panic(self.follow["Expression"])
             node.add(self.epsilon())
         return node
@@ -711,7 +715,7 @@ class Parser:
         if self.lookahead()[1] in {"+", "-"}:
             node.add(self.match(self.lookahead()[1]))
         else:
-            self.errors.append("syntax error, missing addop")
+            self.errors.append(f"#{self.lookahead()[2]} :syntax error, missing addop")
             node.add(self.epsilon())
         return node
 
