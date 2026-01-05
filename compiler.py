@@ -466,9 +466,25 @@ class Parser:
         elif la in {";", "["}:
             node.add(self.Var_declaration_prime())
         else:
-            self.errors.append(f"#{self.lookahead()[2]} : syntax error, illegal {la}")
-            self.panic(self.follow["Declaration-prime"])
-            node.add(self.epsilon())
+            # This is an error - missing semicolon or other issue
+            # But we should NOT skip to the next function
+            # Just log error and try to continue in current context
+            line = self.lookahead()[2]
+            self.errors.append(f"#{line} : syntax error, missing Declaration-prime")
+            
+            # Check what comes next - if it's something that could be a statement,
+            # then this was probably a missing semicolon
+            next_la = self.lookahead()[1]
+            if next_la in {"return", "if", "for", "{", "break", ";"} or \
+            self.lookahead()[0] in {"ID", "NUM"} or \
+            next_la in {"(", "+", "-"}:
+                # This looks like the start of a statement, so just add epsilon
+                # and let the statement list handle it
+                node.add(self.epsilon())
+            else:
+                # Something else - might be end of function or next declaration
+                # Don't panic, just add epsilon
+                node.add(self.epsilon())
         return node
 
     def Var_declaration_prime(self):
@@ -478,21 +494,41 @@ class Parser:
             node.add(self.match("["))
             node.add(self.match_type("NUM"))
             node.add(self.match("]"))
-            node.add(self.match(";"))
+            # Check for missing semicolon after array declaration
+            if self.lookahead()[1] == ";":
+                node.add(self.match(";"))
+            else:
+                line = self.lookahead()[2]
+                self.errors.append(f"#{line} : syntax error, missing ;")
+                # Don't panic, just continue
         elif la == ";":
             node.add(self.match(";"))
         else:
-            self.errors.append(f"#{self.lookahead()[2]} : syntax error, illegal {la}")
-            self.panic(self.follow["Var-declaration-prime"])
-            node.add(self.epsilon())
+            # Missing semicolon for simple variable declaration
+            line = self.lookahead()[2]
+            self.errors.append(f"#{line} : syntax error, missing ;")
+            # Don't add the semicolon node, just continue
         return node
-
     def Fun_declaration_prime(self):
         node = Node("Fun-declaration-prime")
         node.add(self.match("("))
-        node.add(self.Params())
-        node.add(self.match(")"))
-        node.add(self.Compound_stmt())
+        
+        # Parse params
+        params_node = self.Params()
+        node.add(params_node)
+        
+        # After params, check if we should continue
+        # If params had an error, don't try to parse the rest
+        la = self.lookahead()[1]
+        if la == ")":
+            node.add(self.match(")"))
+            node.add(self.Compound_stmt())
+        else:
+            # Log error for missing )
+            line = self.lookahead()[2]
+            self.errors.append(f"#{line} : syntax error, missing )")
+            # Don't try to parse Compound_stmt
+        
         return node
 
     def Type_specifier(self):
@@ -519,16 +555,17 @@ class Parser:
             if la_type == "ID":
                 node.add(Node(f"(ID, {la_val})"))
                 self.advance()
+                node.add(self.Param_prime())
+                node.add(self.Param_list())
             else:
+                # CRITICAL: On error, return immediately without parsing more
                 self.errors.append(f"#{la_line} : syntax error, missing ID")
-                self.panic(self.follow["Params"])
-                node.add(Node("(ID, )"))
-            node.add(self.Param_prime())
-            node.add(self.Param_list())
+                # Don't add any more children, just return
+                # Don't call panic, don't add epsilon nodes
+                return node
         else:
             self.errors.append(f"#{la_line} : syntax error, illegal {la_val}")
-            self.panic(self.follow["Params"])
-            node.add(self.epsilon())
+            # Don't panic, just return the node as is
         return node
 
     def Param_list(self):
@@ -562,17 +599,32 @@ class Parser:
         node.add(self.match("{"))
         node.add(self.Declaration_list())
         node.add(self.Statement_list())
-        node.add(self.match("}"))
+        # Check for missing closing brace
+        if self.lookahead()[1] == "}":
+            node.add(self.match("}"))
+        else:
+            line = self.lookahead()[2]
+            self.errors.append(f"#{line} : syntax error, missing }}")
+            # Don't add the closing brace node
         return node
 
     def Statement_list(self):
         node = Node("Statement-list")
         la = self.lookahead()[1]
-        if la in {"}", "$"}:
+        if la == "}":
+            node.add(self.epsilon())
+        elif la == "$":
+            # Unexpected EOF
+            self.errors.append(f"#{self.lookahead()[2]} : syntax error, Unexpected EOF")
             node.add(self.epsilon())
         else:
-            node.add(self.Statement())
-            node.add(self.Statement_list())
+            try:
+                node.add(self.Statement())
+                node.add(self.Statement_list())
+            except Exception as e:
+                # If Statement fails, add epsilon and continue
+                self.errors.append(f"#{self.lookahead()[2]} : syntax error in statement")
+                node.add(self.epsilon())
         return node
 
     def Statement(self):
@@ -593,13 +645,44 @@ class Parser:
             node.add(self.Expression_stmt())
         elif la_val == ";" or la_type in {"ID", "NUM"} or la_val in {"(", "+", "-"}:
             node.add(self.Expression_stmt())
-        elif la_val in {"int", "void"}:  # Special recovery for misplaced declaration
-            self.errors.append(f"#{tok[2]} : syntax error, illegal {la_val}")
-            self.advance()  # Skip the type keyword silently to match intended behavior
-            node.add(self.Expression_stmt())  # Parse the remaining "ID ;" as expression-stmt
+        elif la_val in {"int", "void"}:  
+            # This could be a declaration in statement position
+            # Check if it's a function declaration (has '(' after ID)
+            # Save current position
+            current_pos = self.pos
+            
+            # Skip type
+            self.advance()
+            
+            # Check if next is ID
+            if self.lookahead()[0] == "ID":
+                self.advance()  # Skip ID
+                
+                # Check if next is '('
+                if self.lookahead()[1] == "(":
+                    # This is a function declaration in statement position - major error
+                    # Restore position and log error
+                    self.pos = current_pos
+                    self.errors.append(f"#{tok[2]} : syntax error, illegal {la_val}")
+                    # Skip until we find something that looks like a statement start
+                    # or end of block
+                    while self.lookahead()[1] not in {"}", "int", "void", "if", "for", "return", "{", ";", "$"}:
+                        self.advance()
+                    node.add(self.epsilon())
+                else:
+                    # This is a variable declaration like "int x;"
+                    self.pos = current_pos
+                    self.errors.append(f"#{tok[2]} : syntax error, illegal {la_val}")
+                    self.advance()  # Skip the type keyword
+                    node.add(self.Expression_stmt())  # Parse the remaining as expression-stmt
+            else:
+                self.pos = current_pos
+                self.errors.append(f"#{tok[2]} : syntax error, illegal {la_val}")
+                self.panic({";", "}", "else", "$"})
+                node.add(self.epsilon())
         else:
             self.errors.append(f"#{tok[2]} : syntax error, illegal {la_val}")
-            self.panic({";", "}", "else", "$"})  # Broader sync set for other errors
+            self.panic({";", "}", "else", "$"})
             if self.lookahead()[1] == ";":
                 node.add(self.match(";"))
             else:
@@ -614,10 +697,20 @@ class Parser:
             node.add(self.match(";"))
         elif la_type in {"ID", "NUM"} or la_val in {"(", "+", "-"}:
             node.add(self.Expression())
-            node.add(self.match(";"))
+            # Check for missing semicolon
+            if self.lookahead()[1] == ";":
+                node.add(self.match(";"))
+            else:
+                self.errors.append(f"#{self.lookahead()[2]} : syntax error, missing ;")
+                # Don't panic, just continue
         elif la_val == "break":
             node.add(self.match("break"))
-            node.add(self.match(";"))
+            # Check for missing semicolon
+            if self.lookahead()[1] == ";":
+                node.add(self.match(";"))
+            else:
+                self.errors.append(f"#{self.lookahead()[2]} : syntax error, missing ;")
+                # Don't panic, just continue
         else:
             self.errors.append(f"#{la_line} : syntax error, illegal {la_val}")
             self.panic({";", "}", "$"})
@@ -632,7 +725,12 @@ class Parser:
         node.add(self.match("if"))
         node.add(self.match("("))
         node.add(self.Expression())
-        node.add(self.match(")"))
+        # Check for missing closing paren
+        if self.lookahead()[1] == ")":
+            node.add(self.match(")"))
+        else:
+            line = self.lookahead()[2]
+            self.errors.append(f"#{line} : syntax error, missing )")
         node.add(self.Statement())
         node.add(self.Else_stmt())
         return node
@@ -670,8 +768,14 @@ class Parser:
         if self.lookahead()[1] == ";":
             node.add(self.match(";"))
         else:
+            # Could have expression without semicolon
             node.add(self.Expression())
-            node.add(self.match(";"))
+            # Check for missing semicolon
+            if self.lookahead()[1] == ";":
+                node.add(self.match(";"))
+            else:
+                self.errors.append(f"#{self.lookahead()[2]} : syntax error, missing ;")
+                # Don't panic, just continue
         return node
 
     # =================== Expression ===================
