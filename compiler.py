@@ -295,7 +295,6 @@ class Scanner:
         self.write_errors()
         self.write_symbol_table()
 
-
 class Node:
     def __init__(self, name):
         self.name = name
@@ -304,104 +303,141 @@ class Node:
     def add(self, child):
         self.children.append(child)
 
+    def __repr__(self, level=0):
+        ret = "    " * level + repr(self.name) + "\n"
+        for child in self.children:
+            ret += child.__repr__(level + 1)
+        return ret
+    
     def print(self, f, prefix="", is_last=True):
+        
         if prefix == "":
             f.write(self.name + "\n")
         else:
             f.write(prefix + ("└── " if is_last else "├── ") + self.name + "\n")
 
         child_prefix = prefix + ("    " if is_last else "│   ")
-
         for i, child in enumerate(self.children):
-            child.print(f, child_prefix, i == len(self.children) - 1)
+            last = i == len(self.children) - 1
+            child.print(f, child_prefix, last)
 
-
-# =========================================================
-# ======================== PARSER =========================
-# =========================================================
 
 class Parser:
     def __init__(self, tokens):
         self.tokens = tokens
         self.pos = 0
         self.errors = []
+
+        # ================= Follow sets =================
         self.follow = {
             "Program": {"$"},
             "Declaration-list": {"$", "}"},
+            "Declaration": {"int", "void", "}", "$"},
+            "Declaration-initial": {";", "(", "["},
+            "Declaration-prime": {";", "{"},
+            "Fun-declaration-prime": {";", "{"},
+            "Var-declaration-prime": {";", "{"},
+            "Params": {")"},
+            "Param-list": {")"},
+            "Param": {")"},
+            "Param-prime": {",", ")"},
+            "Compound-stmt": {"}", "$"},
             "Statement-list": {"}"},
             "Statement": {"}", "else"},
+            "Expression-stmt": {";", "}"},
             "Expression": {";", ")", "]", ","},
-            "Return-stmt-prime": {"}"},
+            "Return-stmt-prime": {";"},
+            "B": {";", "]"},
+            "H": {";", "]"},
+            "C": {";", ")", "]"},
+            "D": {";", ")", "]"},
+            "G": {";", ")", "]"},
+            "Var-call-prime": {";", ")", "]"},
+            "Var-prime": {";", ")", "]"},
+            "Factor-prime": {"*", "/", "+", "-", ";", ")", "]"},
+            "Args": {")"},
+            "Arg-list-prime": {")"},
         }
 
-
-    def synchronize(self, sync_set):
-        while True:
-            token = self.lookahead()
-
-            if token[1] in sync_set or token[0] == "$":
-                return
-
-            self.advance()
-
-
-    def panic(self, follow_set):
-        while self.lookahead()[1] not in follow_set and self.lookahead()[1] != "$":
-            self.advance()
-
-
+    # =================== Utilities ===================
     def lookahead(self):
+        if self.pos >= len(self.tokens):
+            return ("$", "$", self.tokens[-1][2] if self.tokens else 0)
         return self.tokens[self.pos]
 
     def advance(self):
-        self.pos += 1
+        if self.pos < len(self.tokens):
+            self.pos += 1
 
-    def match(self, expected):
+    def panic(self, follow_set):
+        while self.lookahead()[1] not in follow_set and self.lookahead()[0] != "$":
+            self.advance()
+
+    def match(self, expected, follow_set=None):
         tok = self.lookahead()
         if tok[1] == expected:
             node = Node(f"({tok[0]}, {tok[1]})")
             self.advance()
             return node
-        self.errors.append(f"#{self.lookahead()[2]} :syntax error, missing {expected}")
-        self.panic({expected})
+        self.errors.append(f"#{tok[2]} : syntax error, missing {expected}")
+        if follow_set is None:
+            follow_set = {expected}
+        self.panic(follow_set)
+        if self.lookahead()[1] == expected:
+            self.advance()
         return Node(f"(SYMBOL, {expected})")
-            
-    def match_type(self, expected_type):
+
+    def match_type(self, expected_type, follow_set=None):
         tok = self.lookahead()
         if tok[0] == expected_type:
             node = Node(f"({tok[0]}, {tok[1]})")
             self.advance()
             return node
-        else:
-            self.errors.append(f"#{self.lookahead()[2]} :syntax error, missing {expected_type}")
-            return Node(f"({expected_type}, )")
-        
+        self.errors.append(f"#{tok[2]} : syntax error, missing {expected_type}")
+        if follow_set is None:
+            follow_set = {expected_type}
+        self.panic(follow_set)
+        if self.lookahead()[0] == expected_type:
+            self.advance()
+        return Node(f"({expected_type}, )")
 
     def epsilon(self):
         return Node("epsilon")
 
-    # ================= Grammar =================
-
+    # =================== Grammar ===================
     def Program(self):
         node = Node("Program")
         node.add(self.Declaration_list())
 
-        if self.lookahead()[1] != "$":
-            self.errors.append(
-                f"#{self.lookahead()[2]} : syntax error, illegal {self.lookahead()[1]}"
-            )
+        tok = self.lookahead()
+        if tok[0] == "$":
+            # reached proper EOF
+            node.add(Node("$"))
+        else:
+            # some leftover token that is not expected at the top-level
+            self.errors.append(f"#{tok[2]} : syntax error, illegal {tok[1]}")
+            # optionally skip until EOF
+            while self.lookahead()[0] != "$":
+                self.advance()
+            node.add(Node("$"))
 
-        node.add(Node("$"))
         return node
 
     def Declaration_list(self):
         node = Node("Declaration-list")
-        if self.lookahead()[1] in {"int", "void"}:
+        la_type, la_val, _ = self.lookahead()  # lookahead token
+        # If the lookahead indicates the start of a declaration
+        if la_val in {"int", "void"}:
+            # Add the first declaration
             node.add(self.Declaration())
+            # Recursively process the rest of the declaration list
             node.add(self.Declaration_list())
         else:
+            # Empty production
             node.add(self.epsilon())
         return node
+
+
 
     def Declaration(self):
         node = Node("Declaration")
@@ -412,28 +448,43 @@ class Parser:
     def Declaration_initial(self):
         node = Node("Declaration-initial")
         node.add(self.Type_specifier())
-        tok = self.lookahead()
-        node.add(Node(f"(ID, {tok[1]})"))
-        self.advance()
+        la_type, la_val, la_line = self.lookahead()
+        if la_type == "ID":
+            node.add(Node(f"(ID, {la_val})"))
+            self.advance()
+        else:
+            self.errors.append(f"#{la_line} : syntax error, missing ID")
+            self.panic(self.follow["Declaration-initial"])
+            node.add(Node("(ID, )"))
         return node
 
     def Declaration_prime(self):
         node = Node("Declaration-prime")
-        if self.lookahead()[1] == "(":
+        la = self.lookahead()[1]
+        if la == "(":
             node.add(self.Fun_declaration_prime())
-        else:
+        elif la in {";", "["}:
             node.add(self.Var_declaration_prime())
+        else:
+            self.errors.append(f"#{self.lookahead()[2]} : syntax error, illegal {la}")
+            self.panic(self.follow["Declaration-prime"])
+            node.add(self.epsilon())
         return node
 
     def Var_declaration_prime(self):
         node = Node("Var-declaration-prime")
-        if self.lookahead()[1] == "[":
+        la = self.lookahead()[1]
+        if la == "[":
             node.add(self.match("["))
             node.add(self.match_type("NUM"))
             node.add(self.match("]"))
             node.add(self.match(";"))
-        else:
+        elif la == ";":
             node.add(self.match(";"))
+        else:
+            self.errors.append(f"#{self.lookahead()[2]} : syntax error, illegal {la}")
+            self.panic(self.follow["Var-declaration-prime"])
+            node.add(self.epsilon())
         return node
 
     def Fun_declaration_prime(self):
@@ -445,25 +496,40 @@ class Parser:
         return node
 
     def Type_specifier(self):
-        tok = self.lookahead()
+        la_type, la_val, la_line = self.lookahead()
         node = Node("Type-specifier")
-        node.add(Node(f"(KEYWORD, {tok[1]})"))
-        self.advance()
+        if la_val in {"int", "void"}:
+            node.add(Node(f"(KEYWORD, {la_val})"))
+            self.advance()
+        else:
+            self.errors.append(f"#{la_line} : syntax error, missing type specifier")
+            self.panic(self.follow["Declaration-initial"])
+            node.add(Node("(KEYWORD, )"))
         return node
 
+    # =================== Params ===================
     def Params(self):
         node = Node("Params")
-        if self.lookahead()[1] == "void":
+        la_type, la_val, la_line = self.lookahead()
+        if la_val == "void":
             node.add(self.match("void"))
-        else:
+        elif la_val == "int":
             node.add(self.match("int"))
-            tok = self.lookahead()
-            node.add(Node(f"(ID, {tok[1]})"))
-            self.advance()
+            la_type, la_val, la_line = self.lookahead()
+            if la_type == "ID":
+                node.add(Node(f"(ID, {la_val})"))
+                self.advance()
+            else:
+                self.errors.append(f"#{la_line} : syntax error, missing ID")
+                self.panic(self.follow["Params"])
+                node.add(Node("(ID, )"))
             node.add(self.Param_prime())
             node.add(self.Param_list())
+        else:
+            self.errors.append(f"#{la_line} : syntax error, illegal {la_val}")
+            self.panic(self.follow["Params"])
+            node.add(self.epsilon())
         return node
-
 
     def Param_list(self):
         node = Node("Param-list")
@@ -475,13 +541,11 @@ class Parser:
             node.add(self.epsilon())
         return node
 
-
     def Param(self):
         node = Node("Param")
         node.add(self.Declaration_initial())
         node.add(self.Param_prime())
         return node
-
 
     def Param_prime(self):
         node = Node("Param-prime")
@@ -492,46 +556,77 @@ class Parser:
             node.add(self.epsilon())
         return node
 
-
+    # =================== Compound Statement ===================
     def Compound_stmt(self):
         node = Node("Compound-stmt")
         node.add(self.match("{"))
         node.add(self.Declaration_list())
-        node.add(self.Statement_list())  
+        node.add(self.Statement_list())
         node.add(self.match("}"))
         return node
-    
+
     def Statement_list(self):
         node = Node("Statement-list")
-
-        if self.lookahead()[1] == "}":
+        la = self.lookahead()[1]
+        if la in {"}", "$"}:
             node.add(self.epsilon())
         else:
             node.add(self.Statement())
             node.add(self.Statement_list())
-
         return node
-
-
-
 
     def Statement(self):
         node = Node("Statement")
-        la = self.lookahead()[1]
+        tok = self.lookahead()
+        la_val = tok[1]
+        la_type = tok[0]
 
-        if la == "{":
+        if la_val == "{":
             node.add(self.Compound_stmt())
-        elif la == "if":
+        elif la_val == "if":
             node.add(self.Selection_stmt())
-        elif la == "for":
+        elif la_val == "for":
             node.add(self.Iteration_stmt())
-        elif la == "return":
+        elif la_val == "return":
             node.add(self.Return_stmt())
-        else:
+        elif la_val == "break":
             node.add(self.Expression_stmt())
-
+        elif la_val == ";" or la_type in {"ID", "NUM"} or la_val in {"(", "+", "-"}:
+            node.add(self.Expression_stmt())
+        elif la_val in {"int", "void"}:  # Special recovery for misplaced declaration
+            self.errors.append(f"#{tok[2]} : syntax error, illegal {la_val}")
+            self.advance()  # Skip the type keyword silently to match intended behavior
+            node.add(self.Expression_stmt())  # Parse the remaining "ID ;" as expression-stmt
+        else:
+            self.errors.append(f"#{tok[2]} : syntax error, illegal {la_val}")
+            self.panic({";", "}", "else", "$"})  # Broader sync set for other errors
+            if self.lookahead()[1] == ";":
+                node.add(self.match(";"))
+            else:
+                node.add(self.epsilon())
         return node
-        
+
+    # =================== Statements ===================
+    def Expression_stmt(self):
+        node = Node("Expression-stmt")
+        la_type, la_val, la_line = self.lookahead()
+        if la_val == ";":
+            node.add(self.match(";"))
+        elif la_type in {"ID", "NUM"} or la_val in {"(", "+", "-"}:
+            node.add(self.Expression())
+            node.add(self.match(";"))
+        elif la_val == "break":
+            node.add(self.match("break"))
+            node.add(self.match(";"))
+        else:
+            self.errors.append(f"#{la_line} : syntax error, illegal {la_val}")
+            self.panic({";", "}", "$"})
+            if self.lookahead()[1] == ";":
+                node.add(self.match(";"))
+            else:
+                node.add(self.epsilon())
+        return node
+
     def Selection_stmt(self):
         node = Node("Selection-stmt")
         node.add(self.match("if"))
@@ -550,7 +645,7 @@ class Parser:
         else:
             node.add(self.epsilon())
         return node
-    
+
     def Iteration_stmt(self):
         node = Node("Iteration-stmt")
         node.add(self.match("for"))
@@ -564,7 +659,6 @@ class Parser:
         node.add(self.Compound_stmt())
         return node
 
-        
     def Return_stmt(self):
         node = Node("Return-stmt")
         node.add(self.match("return"))
@@ -580,53 +674,30 @@ class Parser:
             node.add(self.match(";"))
         return node
 
-
-    def Expression_stmt(self):
-        node = Node("Expression-stmt")
-        print(self.lookahead())
-        la_type, la_val , la_line = self.lookahead()
-
-        if la_val == ";":
-            node.add(self.match(";"))
-            return node
-
-        if la_type in {"ID", "NUM"} or la_val in {"(", "+", "-"}:
-            node.add(self.Expression())
-            node.add(self.match(";"))
-            return node
-
-        self.errors.append(f"#{la_line} : syntax error , illegal {la_val}")
-        self.synchronize({";"})
-        if self.lookahead()[1] == ";":
-            node.add(self.match(";"))
-        return node
-
-
-
-
+    # =================== Expression ===================
     def Expression(self):
         node = Node("Expression")
-        la_type, la_val , la_line = self.lookahead()
-
+        la_type, la_val, la_line = self.lookahead()
         if la_type == "ID":
             node.add(Node(f"(ID, {la_val})"))
             self.advance()
             node.add(self.B())
-        elif la_val in {"(", "+", "-"} or la_type == "NUM":
+        elif la_type == "NUM" or la_val in {"(", "+", "-"}:
             node.add(self.Simple_expression_zegond())
         else:
-            self.errors.append(f"#{self.lookahead()[2]} :syntax error, illegal Expression")
-            self.panic(self.follow["Expression"])
+            self.errors.append(f"#{la_line} : syntax error, illegal Expression")
+            self.panic({";", ")", "]", ",", "}", "$"})
             node.add(self.epsilon())
-
         return node
 
+    # =================== B, H, Simple-expression ===================
     def B(self):
         node = Node("B")
-        if self.lookahead()[1] == "=":
+        la = self.lookahead()[1]
+        if la == "=":
             node.add(self.match("="))
             node.add(self.Expression())
-        elif self.lookahead()[1] == "[":
+        elif la == "[":
             node.add(self.match("["))
             node.add(self.Expression())
             node.add(self.match("]"))
@@ -635,10 +706,10 @@ class Parser:
             node.add(self.Simple_expression_prime())
         return node
 
-
     def H(self):
         node = Node("H")
-        if self.lookahead()[1] == "=":
+        la = self.lookahead()[1]
+        if la == "=":
             node.add(self.match("="))
             node.add(self.Expression())
         else:
@@ -647,52 +718,51 @@ class Parser:
             node.add(self.C())
         return node
 
-
-    def Simple_expression_prime(self):
-        n = Node("Simple-expression-prime")
-        n.add(self.Additive_expression_prime())
-        n.add(self.C())
-        return n
-    
     def Simple_expression_zegond(self):
         node = Node("Simple-expression-zegond")
         node.add(self.Additive_expression_zegond())
         node.add(self.C())
         return node
-    
-    def Relop(self):
-        node = Node("Relop")
-        if self.lookahead()[1] in {"==", "<"}:
-            node.add(self.match(self.lookahead()[1]))
-        else:
-            self.errors.append(f"#{self.lookahead()[2]} :syntax error, missing relop")
-            self.panic(self.follow["Expression"])
-            node.add(self.epsilon())
+
+    def Simple_expression_prime(self):
+        node = Node("Simple-expression-prime")
+        node.add(self.Additive_expression_prime())
+        node.add(self.C())
         return node
 
-
-
+    # =================== C, Relop, Additive ===================
     def C(self):
         node = Node("C")
-        if self.lookahead()[1] in {"<", "=="}:
+        la = self.lookahead()[1]
+        if la in {"<", "=="}:
             node.add(self.Relop())
             node.add(self.Additive_expression())
         else:
             node.add(self.epsilon())
         return node
 
+    def Relop(self):
+        node = Node("Relop")
+        la = self.lookahead()[1]
+        if la in {"==", "<"}:
+            node.add(self.match(la))
+        else:
+            self.errors.append(f"#{self.lookahead()[2]} : syntax error, missing relop")
+            node.add(self.epsilon())
+        return node
+
     def Additive_expression(self):
-        n = Node("Additive-expression")
-        n.add(self.Term())
-        n.add(self.D())
-        return n
-    
+        node = Node("Additive-expression")
+        node.add(self.Term())
+        node.add(self.D())
+        return node
+
     def Additive_expression_prime(self):
-        n = Node("Additive-expression-prime")
-        n.add(self.Term_prime())
-        n.add(self.D())
-        return n
-    
+        node = Node("Additive-expression-prime")
+        node.add(self.Term_prime())
+        node.add(self.D())
+        return node
+
     def Additive_expression_zegond(self):
         node = Node("Additive-expression-zegond")
         node.add(self.Term_zegond())
@@ -701,7 +771,8 @@ class Parser:
 
     def D(self):
         node = Node("D")
-        if self.lookahead()[1] in {"+", "-"}:
+        la = self.lookahead()[1]
+        if la in {"+", "-"}:
             node.add(self.Addop())
             node.add(self.Term())
             node.add(self.D())
@@ -709,53 +780,28 @@ class Parser:
             node.add(self.epsilon())
         return node
 
-
     def Addop(self):
         node = Node("Addop")
-        if self.lookahead()[1] in {"+", "-"}:
-            node.add(self.match(self.lookahead()[1]))
+        la = self.lookahead()[1]
+        if la in {"+", "-"}:
+            node.add(self.match(la))
         else:
-            self.errors.append(f"#{self.lookahead()[2]} :syntax error, missing addop")
+            self.errors.append(f"#{self.lookahead()[2]} : syntax error, missing addop")
             node.add(self.epsilon())
         return node
 
-
+    # =================== Term / Factor ===================
     def Term(self):
-        n = Node("Term")
-        n.add(self.Signed_factor())
-        n.add(self.G())
-        return n
-    
-    def Signed_factor(self):
-        node = Node("Signed-factor")
-        if self.lookahead()[1] in {"+", "-"}:
-            node.add(self.match(self.lookahead()[1]))
-            node.add(self.Factor())
-        else:
-            node.add(self.Factor())
+        node = Node("Term")
+        node.add(self.Signed_factor())
+        node.add(self.G())
         return node
-
-    def Factor(self):
-        node = Node("Factor")
-        if self.lookahead()[1] == "(":
-            node.add(self.match("("))
-            node.add(self.Expression())
-            node.add(self.match(")"))
-        elif self.lookahead()[0] == "ID":
-            tok = self.lookahead()
-            node.add(Node(f"(ID, {tok[1]})"))
-            self.advance()
-            node.add(self.Var_call_prime())
-        else:
-            node.add(self.match_type("NUM"))
-        return node
-
 
     def Term_prime(self):
-        n = Node("Term-prime")
-        n.add(self.Factor_prime())
-        n.add(self.G())
-        return n
+        node = Node("Term-prime")
+        node.add(self.Factor_prime())
+        node.add(self.G())
+        return node
 
     def Term_zegond(self):
         node = Node("Term-zegond")
@@ -765,10 +811,90 @@ class Parser:
 
     def G(self):
         node = Node("G")
-        if self.lookahead()[1] in {"*", "/"}:
-            node.add(self.match(self.lookahead()[1]))
+        la = self.lookahead()[1]
+        if la in {"*", "/"}:
+            node.add(self.match(la))
             node.add(self.Signed_factor())
             node.add(self.G())
+        else:
+            node.add(self.epsilon())
+        return node
+
+    def Signed_factor(self):
+        node = Node("Signed-factor")
+        la = self.lookahead()[1]
+        if la in {"+", "-"}:
+            node.add(self.match(la))
+            node.add(self.Factor())
+        else:
+            node.add(self.Factor())
+        return node
+
+    def Signed_factor_zegond(self):
+        node = Node("Signed-factor-zegond")
+        la = self.lookahead()[1]
+        if la in {"+", "-"}:
+            node.add(self.match(la))
+            node.add(self.Factor_zegond())
+        else:
+            node.add(self.Factor_zegond())
+        return node
+
+    def Factor(self):
+        node = Node("Factor")
+        la_type, la_val, la_line = self.lookahead()
+        if la_val == "(":
+            node.add(self.match("("))
+            node.add(self.Expression())
+            node.add(self.match(")"))
+        elif la_type == "ID":
+            node.add(Node(f"(ID, {la_val})"))
+            self.advance()
+            node.add(self.Var_call_prime())
+        elif la_type == "NUM":
+            node.add(Node(f"(NUM, {la_val})"))
+            self.advance()
+        else:
+            self.errors.append(f"#{la_line} : syntax error, illegal Factor")
+            self.panic({"+", "-", "*", "/", ";", ")", "]", "$"})
+            node.add(self.epsilon())
+        return node
+
+    def Factor_zegond(self):
+        node = Node("Factor-zegond")
+        la_type, la_val, la_line = self.lookahead()
+        if la_type == "NUM":
+            node.add(Node(f"(NUM, {la_val})"))
+            self.advance()
+        elif la_val == "(":
+            node.add(self.match("("))
+            node.add(self.Expression())
+            node.add(self.match(")"))
+        else:
+            self.errors.append(f"#{la_line} : syntax error, illegal Factor-zegond")
+            self.panic({"+", "-", "*", "/", ";", ")", "]", "$"})
+            node.add(self.epsilon())
+        return node
+
+    # =================== Var / Args ===================
+    def Var_call_prime(self):
+        node = Node("Var-call-prime")
+        la = self.lookahead()[1]
+        if la == "(":
+            node.add(self.match("("))
+            node.add(self.Args())
+            node.add(self.match(")"))
+        else:
+            node.add(self.Var_prime())
+        return node
+
+    def Var_prime(self):
+        node = Node("Var-prime")
+        la = self.lookahead()[1]
+        if la == "[":
+            node.add(self.match("["))
+            node.add(self.Expression())
+            node.add(self.match("]"))
         else:
             node.add(self.epsilon())
         return node
@@ -781,44 +907,6 @@ class Parser:
             node.add(self.match(")"))
         else:
             node.add(self.epsilon())
-        return node
-
-
-        
-    def Signed_factor_zegond(self):
-        node = Node("Signed-factor-zegond")
-        node.add(self.Factor_zegond())
-        return node
-
-    def Factor_zegond(self):
-        node = Node("Factor-zegond")
-        if self.lookahead()[0] == "NUM":
-            node.add(Node(f"(NUM, {self.lookahead()[1]})"))
-            self.advance()
-        else:
-            node.add(self.match("("))
-            node.add(self.Expression())
-            node.add(self.match(")"))
-        return node
-
-    def Var_prime(self):
-        node = Node("Var-prime")
-        if self.lookahead()[1] == "[":
-            node.add(self.match("["))
-            node.add(self.Expression())
-            node.add(self.match("]"))
-        else:
-            node.add(self.epsilon())    
-        return node
-
-    def Var_call_prime(self):
-        node = Node("Var-call-prime")
-        if self.lookahead()[1] == "(":
-            node.add(self.match("("))
-            node.add(self.Args())
-            node.add(self.match(")"))
-        else:
-            node.add(self.Var_prime())
         return node
 
     def Args(self):
@@ -835,7 +923,6 @@ class Parser:
         node.add(self.Arg_list_prime())
         return node
 
-
     def Arg_list_prime(self):
         node = Node("Arg-list-prime")
         if self.lookahead()[1] == ",":
@@ -845,9 +932,6 @@ class Parser:
         else:
             node.add(self.epsilon())
         return node
-    
-
-
 
 
 # =========================================================
@@ -867,7 +951,7 @@ def main():
     for ln in sorted(scanner.tokens_per_line):
         tokens.extend(scanner.tokens_per_line[ln])
 
-    tokens.append(("$", "$"))
+    tokens.append(("$", "$" , scanner.lineno))
 
     parser = Parser(tokens)
     tree = parser.Program()
