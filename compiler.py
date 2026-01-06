@@ -3,7 +3,7 @@ import sys
 from collections import deque
 KEYWORDS = ["break", "else", "if", "for", "int", "return", "void"]
 
-SYMBOLS = set([';', ':', ',', '[', ']', '(', ')', '{', '}', '+', '-', '*', '/', '<', '=', ])
+SYMBOLS = set([';', ':', ',', '[', ']', '(', ')', '{', '}', '+', '-', '*', '/', '<', '=', '>'])
 WHITESPACE_CHARS = set([' ', '\t', '\r', '\v', '\f', '\n'])
 
 
@@ -295,747 +295,873 @@ class Scanner:
         self.write_errors()
         self.write_symbol_table()
 
-class Node:
-    def __init__(self, name):
-        self.name = name
-        self.children = []
 
-    def add(self, child):
+
+
+from dataclasses import dataclass
+
+from typing import List, Tuple, Dict, Set, Optional
+
+
+
+Token = Tuple[str, str, int]  # (type, value, line)
+
+
+
+
+class Node:
+
+    def __init__(self, name: str):
+
+        self.name = name
+
+        self.children: List["Node"] = []
+
+
+
+    def add(self, child: "Node"):
+
         self.children.append(child)
 
-    def __repr__(self, level=0):
-        ret = "    " * level + repr(self.name) + "\n"
-        for child in self.children:
-            ret += child.__repr__(level + 1)
-        return ret
-    
+
+
     def print(self, f, prefix="", is_last=True):
-        
+
         if prefix == "":
+
             f.write(self.name + "\n")
+
         else:
+
             f.write(prefix + ("└── " if is_last else "├── ") + self.name + "\n")
 
         child_prefix = prefix + ("    " if is_last else "│   ")
+
         for i, child in enumerate(self.children):
-            last = i == len(self.children) - 1
-            child.print(f, child_prefix, last)
+
+            child.print(f, child_prefix, i == len(self.children) - 1)
+
+
+EPS = "EPSILON"
+
+END = "$"
+
+SYNC = {")", "]", "}" , "{", ";", ","}
+
+@dataclass(frozen=True)
+
+class Sym:
+
+    kind: str  
+
+    name: str
+
+
+
+def T(x): return Sym("T", x)
+
+def N(x): return Sym("N", x)
+
+
+
 
 
 class Parser:
-    def __init__(self, tokens):
+
+    def __init__(self, tokens: List[Token]):
+
         self.tokens = tokens
+
         self.pos = 0
-        self.errors = []
 
-        # ================= Follow sets =================
-        self.follow = {
-            "Program": {"$"},
-            "Declaration-list": {"$", "}"},
-            "Declaration": {"int", "void", "}", "$"},
-            "Declaration-initial": {";", "(", "["},
-            "Declaration-prime": {";", "{"},
-            "Fun-declaration-prime": {";", "{"},
-            "Var-declaration-prime": {";", "{"},
-            "Params": {")"},
-            "Param-list": {")"},
-            "Param": {")"},
-            "Param-prime": {",", ")"},
-            "Compound-stmt": {"}", "$"},
-            "Statement-list": {"}"},
-            "Statement": {"}", "else"},
-            "Expression-stmt": {";", "}"},
-            "Expression": {";", ")", "]", ","},
-            "Return-stmt-prime": {";"},
-            "B": {";", "]"},
-            "H": {";", "]"},
-            "C": {";", ")", "]"},
-            "D": {";", ")", "]"},
-            "G": {";", ")", "]"},
-            "Var-call-prime": {";", ")", "]"},
-            "Var-prime": {";", ")", "]"},
-            "Factor-prime": {"*", "/", "+", "-", ";", ")", "]"},
-            "Args": {")"},
-            "Arg-list-prime": {")"},
-        }
+        self.errors: List[str] = []
 
-    # =================== Utilities ===================
-    def lookahead(self):
+
+
+        # Grammar as productions: A -> [alpha1, alpha2, ...]
+
+        # where each alpha is a list of Sym; empty list represents EPSILON.
+
+        self.start_symbol = "Program"
+
+        self.prods: Dict[str, List[List[Sym]]] = self._build_grammar()
+
+
+
+        self.nonterminals = set(self.prods.keys())
+
+        self.terminals = self._collect_terminals()
+
+
+
+        # FIRST/FOLLOW/PARSE TABLE
+
+        self.first: Dict[str, Set[str]] = {nt: set() for nt in self.nonterminals}
+
+        self.follow: Dict[str, Set[str]] = {nt: set() for nt in self.nonterminals}
+
+        self.table: Dict[Tuple[str, str], List[Sym]] = {}
+
+
+
+        self._compute_first()
+
+        self._compute_follow()
+
+        self._build_parse_table()
+
+
+
+    # ---------- Token utilities ----------
+
+    def _lookahead_token(self) -> Token:
+
         if self.pos >= len(self.tokens):
-            return ("$", "$", self.tokens[-1][2] if self.tokens else 0)
+
+            # EOF line = last token line if exists else 0
+
+            last_line = self.tokens[-1][2] if self.tokens else 0
+
+            return (END, END, last_line)
+
         return self.tokens[self.pos]
 
-    def advance(self):
+
+
+    def _advance(self):
+
         if self.pos < len(self.tokens):
+
             self.pos += 1
 
-    def panic(self, follow_set):
-        while self.lookahead()[1] not in follow_set and self.lookahead()[0] != "$":
-            self.advance()
 
-    def match(self, expected, follow_set=None):
-        tok = self.lookahead()
-        if tok[1] == expected:
-            node = Node(f"({tok[0]}, {tok[1]})")
-            self.advance()
-            return node
-        self.errors.append(f"#{tok[2]} : syntax error, missing {expected}")
-        if follow_set is None:
-            follow_set = {expected}
-        self.panic(follow_set)
-        if self.lookahead()[1] == expected:
-            self.advance()
-        return Node(f"(SYMBOL, {expected})")
 
-    def match_type(self, expected_type, follow_set=None):
-        tok = self.lookahead()
-        if tok[0] == expected_type:
-            node = Node(f"({tok[0]}, {tok[1]})")
-            self.advance()
-            return node
-        self.errors.append(f"#{tok[2]} : syntax error, missing {expected_type}")
-        if follow_set is None:
-            follow_set = {expected_type}
-        self.panic(follow_set)
-        if self.lookahead()[0] == expected_type:
-            self.advance()
-        return Node(f"({expected_type}, )")
+    def _la_symbol(self) -> str:
 
-    def epsilon(self):
-        return Node("epsilon")
+        """Map the current token to a grammar terminal string."""
 
-    # =================== Grammar ===================
-    def Program(self):
-        node = Node("Program")
-        node.add(self.Declaration_list())
+        ttype, tval, _ = self._lookahead_token()
 
-        tok = self.lookahead()
-        if tok[0] == "$":
-            # reached proper EOF
-            node.add(Node("$"))
-        else:
-            # some leftover token that is not expected at the top-level
-            self.errors.append(f"#{tok[2]} : syntax error, illegal {tok[1]}")
-            # optionally skip until EOF
-            while self.lookahead()[0] != "$":
-                self.advance()
-            node.add(Node("$"))
+        if ttype in ("ID", "NUM"):
 
-        return node
+            return ttype
 
-    def Declaration_list(self):
-        node = Node("Declaration-list")
-        la_type, la_val, _ = self.lookahead()  # lookahead token
-        # If the lookahead indicates the start of a declaration
-        if la_val in {"int", "void"}:
-            # Add the first declaration
-            node.add(self.Declaration())
-            # Recursively process the rest of the declaration list
-            node.add(self.Declaration_list())
-        else:
-            # Empty production
-            node.add(self.epsilon())
-        return node
+        if ttype == END:
+
+            return END
+
+        return tval
 
 
 
-    def Declaration(self):
-        node = Node("Declaration")
-        node.add(self.Declaration_initial())
-        node.add(self.Declaration_prime())
-        return node
+    def _token_for_tree(self) -> Node:
 
-    def Declaration_initial(self):
-        node = Node("Declaration-initial")
-        node.add(self.Type_specifier())
-        la_type, la_val, la_line = self.lookahead()
-        if la_type == "ID":
-            node.add(Node(f"(ID, {la_val})"))
-            self.advance()
-        else:
-            self.errors.append(f"#{la_line} : syntax error, missing ID")
-            self.panic(self.follow["Declaration-initial"])
-            node.add(Node("(ID, )"))
-        return node
+        ttype, tval, _ = self._lookahead_token()
 
-    def Declaration_prime(self):
-        node = Node("Declaration-prime")
-        la = self.lookahead()[1]
-        if la == "(":
-            node.add(self.Fun_declaration_prime())
-        elif la in {";", "["}:
-            node.add(self.Var_declaration_prime())
-        else:
-            # This is an error - missing semicolon or other issue
-            # But we should NOT skip to the next function
-            # Just log error and try to continue in current context
-            line = self.lookahead()[2]
-            self.errors.append(f"#{line} : syntax error, missing Declaration-prime")
-            
-            # Check what comes next - if it's something that could be a statement,
-            # then this was probably a missing semicolon
-            next_la = self.lookahead()[1]
-            if next_la in {"return", "if", "for", "{", "break", ";"} or \
-            self.lookahead()[0] in {"ID", "NUM"} or \
-            next_la in {"(", "+", "-"}:
-                # This looks like the start of a statement, so just add epsilon
-                # and let the statement list handle it
-                node.add(self.epsilon())
-            else:
-                # Something else - might be end of function or next declaration
-                # Don't panic, just add epsilon
-                node.add(self.epsilon())
-        return node
+        if ttype == END:
 
-    def Var_declaration_prime(self):
-        node = Node("Var-declaration-prime")
-        la = self.lookahead()[1]
-        if la == "[":
-            node.add(self.match("["))
-            node.add(self.match_type("NUM"))
-            node.add(self.match("]"))
-            # Check for missing semicolon after array declaration
-            if self.lookahead()[1] == ";":
-                node.add(self.match(";"))
-            else:
-                line = self.lookahead()[2]
-                self.errors.append(f"#{line} : syntax error, missing ;")
-                # Don't panic, just continue
-        elif la == ";":
-            node.add(self.match(";"))
-        else:
-            # Missing semicolon for simple variable declaration
-            line = self.lookahead()[2]
-            self.errors.append(f"#{line} : syntax error, missing ;")
-            # Don't add the semicolon node, just continue
-        return node
-    def Fun_declaration_prime(self):
-        node = Node("Fun-declaration-prime")
-        node.add(self.match("("))
-        
-        # Parse params
-        params_node = self.Params()
-        node.add(params_node)
-        
-        # After params, check if we should continue
-        # If params had an error, don't try to parse the rest
-        la = self.lookahead()[1]
-        if la == ")":
-            node.add(self.match(")"))
-            node.add(self.Compound_stmt())
-        else:
-            # Log error for missing )
-            line = self.lookahead()[2]
-            self.errors.append(f"#{line} : syntax error, missing )")
-            # Don't try to parse Compound_stmt
-        
-        return node
+            return Node("$")
 
-    def Type_specifier(self):
-        la_type, la_val, la_line = self.lookahead()
-        node = Node("Type-specifier")
-        if la_val in {"int", "void"}:
-            node.add(Node(f"(KEYWORD, {la_val})"))
-            self.advance()
-        else:
-            self.errors.append(f"#{la_line} : syntax error, missing type specifier")
-            self.panic(self.follow["Declaration-initial"])
-            node.add(Node("(KEYWORD, )"))
-        return node
+        # match your output: (KEYWORD, void) / (ID, a) / (SYMBOL, {) ...
 
-    # =================== Params ===================
-    def Params(self):
-        node = Node("Params")
-        la_type, la_val, la_line = self.lookahead()
-        if la_val == "void":
-            node.add(self.match("void"))
-        elif la_val == "int":
-            node.add(self.match("int"))
-            la_type, la_val, la_line = self.lookahead()
-            if la_type == "ID":
-                node.add(Node(f"(ID, {la_val})"))
-                self.advance()
-                node.add(self.Param_prime())
-                node.add(self.Param_list())
-            else:
-                # CRITICAL: On error, return immediately without parsing more
-                self.errors.append(f"#{la_line} : syntax error, missing ID")
-                # Don't add any more children, just return
-                # Don't call panic, don't add epsilon nodes
-                return node
-        else:
-            self.errors.append(f"#{la_line} : syntax error, illegal {la_val}")
-            # Don't panic, just return the node as is
-        return node
+        return Node(f"({ttype}, {tval})")
 
-    def Param_list(self):
-        node = Node("Param-list")
-        if self.lookahead()[1] == ",":
-            node.add(self.match(","))
-            node.add(self.Param())
-            node.add(self.Param_list())
-        else:
-            node.add(self.epsilon())
-        return node
 
-    def Param(self):
-        node = Node("Param")
-        node.add(self.Declaration_initial())
-        node.add(self.Param_prime())
-        return node
 
-    def Param_prime(self):
-        node = Node("Param-prime")
-        if self.lookahead()[1] == "[":
-            node.add(self.match("["))
-            node.add(self.match("]"))
-        else:
-            node.add(self.epsilon())
-        return node
+    # ---------- Grammar ----------
 
-    # =================== Compound Statement ===================
-    def Compound_stmt(self):
-        node = Node("Compound-stmt")
-        node.add(self.match("{"))
-        node.add(self.Declaration_list())
-        node.add(self.Statement_list())
-        # Check for missing closing brace
-        if self.lookahead()[1] == "}":
-            node.add(self.match("}"))
-        else:
-            line = self.lookahead()[2]
-            self.errors.append(f"#{line} : syntax error, missing }}")
-            # Don't add the closing brace node
-        return node
+    def _build_grammar(self) -> Dict[str, List[List[Sym]]]:
 
-    def Statement_list(self):
-        node = Node("Statement-list")
-        la = self.lookahead()[1]
-        if la == "}":
-            node.add(self.epsilon())
-        elif la == "$":
-            # Unexpected EOF
-            self.errors.append(f"#{self.lookahead()[2]} : syntax error, Unexpected EOF")
-            node.add(self.epsilon())
-        else:
-            try:
-                node.add(self.Statement())
-                node.add(self.Statement_list())
-            except Exception as e:
-                # If Statement fails, add epsilon and continue
-                self.errors.append(f"#{self.lookahead()[2]} : syntax error in statement")
-                node.add(self.epsilon())
-        return node
+        P: Dict[str, List[List[Sym]]] = {}
 
-    def Statement(self):
-        node = Node("Statement")
-        tok = self.lookahead()
-        la_val = tok[1]
-        la_type = tok[0]
 
-        if la_val == "{":
-            node.add(self.Compound_stmt())
-        elif la_val == "if":
-            node.add(self.Selection_stmt())
-        elif la_val == "for":
-            node.add(self.Iteration_stmt())
-        elif la_val == "return":
-            node.add(self.Return_stmt())
-        elif la_val == "break":
-            node.add(self.Expression_stmt())
-        elif la_val == ";" or la_type in {"ID", "NUM"} or la_val in {"(", "+", "-"}:
-            node.add(self.Expression_stmt())
-        elif la_val in {"int", "void"}:  
-            # This could be a declaration in statement position
-            # Check if it's a function declaration (has '(' after ID)
-            # Save current position
-            current_pos = self.pos
-            
-            # Skip type
-            self.advance()
-            
-            # Check if next is ID
-            if self.lookahead()[0] == "ID":
-                self.advance()  # Skip ID
-                
-                # Check if next is '('
-                if self.lookahead()[1] == "(":
-                    # This is a function declaration in statement position - major error
-                    # Restore position and log error
-                    self.pos = current_pos
-                    self.errors.append(f"#{tok[2]} : syntax error, illegal {la_val}")
-                    # Skip until we find something that looks like a statement start
-                    # or end of block
-                    while self.lookahead()[1] not in {"}", "int", "void", "if", "for", "return", "{", ";", "$"}:
-                        self.advance()
-                    node.add(self.epsilon())
+
+        def add(A: str, rhs: List[Sym]):
+
+            P.setdefault(A, []).append(rhs)
+
+
+
+        # Program -> Declaration-list
+
+        add("Program", [N("Declaration-list")])
+
+
+
+        # Declaration-list -> Declaration Declaration-list | EPSILON
+
+        add("Declaration-list", [N("Declaration"), N("Declaration-list")])
+
+        add("Declaration-list", [])
+
+
+
+        # Declaration -> Declaration-initial Declaration-prime
+
+        add("Declaration", [N("Declaration-initial"), N("Declaration-prime")])
+
+
+
+        # Declaration-initial -> Type-specifier ID
+
+        add("Declaration-initial", [N("Type-specifier"), T("ID")])
+
+
+
+        # Declaration-prime -> Fun-declaration-prime | Var-declaration-prime
+
+        add("Declaration-prime", [N("Fun-declaration-prime")])
+
+        add("Declaration-prime", [N("Var-declaration-prime")])
+
+
+
+        # Var-declaration-prime -> [ NUM ] ; | ;
+
+        add("Var-declaration-prime", [T("["), T("NUM"), T("]"), T(";")])
+
+        add("Var-declaration-prime", [T(";")])
+
+
+
+        # Fun-declaration-prime -> ( Params ) Compound-stmt
+
+        add("Fun-declaration-prime", [T("("), N("Params"), T(")"), N("Compound-stmt")])
+
+
+
+        # Type-specifier -> int | void
+
+        add("Type-specifier", [T("int")])
+
+        add("Type-specifier", [T("void")])
+
+
+
+        # Params -> int ID Param-prime Param-list | void
+
+        add("Params", [T("int"), T("ID"), N("Param-prime"), N("Param-list")])
+
+        add("Params", [T("void")])
+
+
+
+        # Param-list -> , Param Param-list | EPSILON
+
+        add("Param-list", [T(","), N("Param"), N("Param-list")])
+
+        add("Param-list", [])
+
+
+
+        # Param -> Declaration-initial Param-prime
+
+        add("Param", [N("Declaration-initial"), N("Param-prime")])
+
+
+
+        # Param-prime -> [ ] | EPSILON
+
+        add("Param-prime", [T("["), T("]")])
+
+        add("Param-prime", [])
+
+
+
+        # Compound-stmt -> { Declaration-list Statement-list }
+
+        add("Compound-stmt", [T("{"), N("Declaration-list"), N("Statement-list"), T("}")])
+
+
+
+        # Statement-list -> Statement Statement-list | EPSILON
+
+        add("Statement-list", [N("Statement"), N("Statement-list")])
+
+        add("Statement-list", [])
+
+
+
+        # Statement -> Expression-stmt | Compound-stmt | Selection-stmt | Iteration-stmt | Return-stmt
+
+        add("Statement", [N("Expression-stmt")])
+
+        add("Statement", [N("Compound-stmt")])
+
+        add("Statement", [N("Selection-stmt")])
+
+        add("Statement", [N("Iteration-stmt")])
+
+        add("Statement", [N("Return-stmt")])
+
+
+
+        # Expression-stmt -> Expression ; | break ; | ;
+
+        add("Expression-stmt", [N("Expression"), T(";")])
+
+        add("Expression-stmt", [T("break"), T(";")])
+
+        add("Expression-stmt", [T(";")])
+
+
+
+        # Selection-stmt -> if ( Expression ) Statement Else-stmt
+
+        add("Selection-stmt", [T("if"), T("("), N("Expression"), T(")"), N("Statement"), N("Else-stmt")])
+
+
+
+        # Else-stmt -> else Statement | EPSILON
+
+        add("Else-stmt", [T("else"), N("Statement")])
+
+        add("Else-stmt", [])
+
+
+
+        # Iteration-stmt -> for ( Expression ; Expression ; Expression ) Compound-stmt
+
+        add("Iteration-stmt", [T("for"), T("("), N("Expression"), T(";"), N("Expression"), T(";"),
+
+                               N("Expression"), T(")"), N("Compound-stmt")])
+
+
+
+        # Return-stmt -> return Return-stmt-prime
+
+        add("Return-stmt", [T("return"), N("Return-stmt-prime")])
+
+
+
+        # Return-stmt-prime -> Expression ; | ;
+
+        add("Return-stmt-prime", [N("Expression"), T(";")])
+
+        add("Return-stmt-prime", [T(";")])
+
+
+
+        # Expression -> Simple-expression-zegond | ID B
+
+        add("Expression", [N("Simple-expression-zegond")])
+
+        add("Expression", [T("ID"), N("B")])
+
+
+
+        # B -> = Expression | [ Expression ] H | Simple-expression-prime
+
+        add("B", [T("="), N("Expression")])
+
+        add("B", [T("["), N("Expression"), T("]"), N("H")])
+
+        add("B", [N("Simple-expression-prime")])
+
+
+
+        # H -> = Expression | G D C
+
+        add("H", [T("="), N("Expression")])
+
+        add("H", [N("G"), N("D"), N("C")])
+
+
+
+        # Simple-expression-zegond -> Additive-expression-zegond C
+
+        add("Simple-expression-zegond", [N("Additive-expression-zegond"), N("C")])
+
+
+
+        # Simple-expression-prime -> Additive-expression-prime C
+
+        add("Simple-expression-prime", [N("Additive-expression-prime"), N("C")])
+
+
+
+        # C -> Relop Additive-expression | EPSILON
+
+        add("C", [N("Relop"), N("Additive-expression")])
+
+        add("C", [])
+
+
+
+        # Relop -> == | <
+
+        add("Relop", [T("==")])
+
+        add("Relop", [T("<")])
+
+        add("Relop", [T(">")])
+
+
+
+        # Additive-expression -> Term D
+
+        add("Additive-expression", [N("Term"), N("D")])
+
+
+
+        # Additive-expression-prime -> Term-prime D
+
+        add("Additive-expression-prime", [N("Term-prime"), N("D")])
+
+
+
+        # Additive-expression-zegond -> Term-zegond D
+
+        add("Additive-expression-zegond", [N("Term-zegond"), N("D")])
+
+
+
+        # D -> Addop Term D | EPSILON
+
+        add("D", [N("Addop"), N("Term"), N("D")])
+
+        add("D", [])
+
+
+
+        # Addop -> + | -
+
+        add("Addop", [T("+")])
+
+        add("Addop", [T("-")])
+
+
+
+        # Term -> Signed-factor G
+
+        add("Term", [N("Signed-factor"), N("G")])
+
+
+
+        # Term-prime -> Factor-prime G
+
+        add("Term-prime", [N("Factor-prime"), N("G")])
+
+
+
+        # Term-zegond -> Signed-factor-zegond G
+
+        add("Term-zegond", [N("Signed-factor-zegond"), N("G")])
+
+
+
+        # G -> * Signed-factor G | / Signed-factor G | EPSILON
+
+        add("G", [T("*"), N("Signed-factor"), N("G")])
+
+        add("G", [T("/"), N("Signed-factor"), N("G")])
+
+        add("G", [])
+
+
+
+        # Signed-factor -> + Factor | - Factor | Factor
+
+        add("Signed-factor", [T("+"), N("Factor")])
+
+        add("Signed-factor", [T("-"), N("Factor")])
+
+        add("Signed-factor", [N("Factor")])
+
+
+
+        # Signed-factor-zegond -> + Factor | - Factor | Factor-zegond
+
+        add("Signed-factor-zegond", [T("+"), N("Factor")])
+
+        add("Signed-factor-zegond", [T("-"), N("Factor")])
+
+        add("Signed-factor-zegond", [N("Factor-zegond")])
+
+
+
+        # Factor -> ( Expression ) | ID Var-call-prime | NUM
+
+        add("Factor", [T("("), N("Expression"), T(")")])
+
+        add("Factor", [T("ID"), N("Var-call-prime")])
+
+        add("Factor", [T("NUM")])
+
+
+
+        # Var-call-prime -> ( Args ) | Var-prime
+
+        add("Var-call-prime", [T("("), N("Args"), T(")")])
+
+        add("Var-call-prime", [N("Var-prime")])
+
+
+
+        # Var-prime -> [ Expression ] | EPSILON
+
+        add("Var-prime", [T("["), N("Expression"), T("]")])
+
+        add("Var-prime", [])
+
+
+
+        # Factor-prime -> ( Args ) | EPSILON
+
+        add("Factor-prime", [T("("), N("Args"), T(")")])
+
+        add("Factor-prime", [])
+
+
+
+        # Factor-zegond -> ( Expression ) | NUM
+
+        add("Factor-zegond", [T("("), N("Expression"), T(")")])
+
+        add("Factor-zegond", [T("NUM")])
+
+
+
+        # Args -> Arg-list | EPSILON
+
+        add("Args", [N("Arg-list")])
+
+        add("Args", [])
+
+
+
+        # Arg-list -> Expression Arg-list-prime
+
+        add("Arg-list", [N("Expression"), N("Arg-list-prime")])
+
+
+
+        # Arg-list-prime -> , Expression Arg-list-prime | EPSILON
+
+        add("Arg-list-prime", [T(","), N("Expression"), N("Arg-list-prime")])
+
+        add("Arg-list-prime", [])
+
+
+
+        return P
+
+
+
+    def _collect_terminals(self) -> Set[str]:
+
+        ts = set()
+
+        for A, alts in self.prods.items():
+
+            for rhs in alts:
+
+                for s in rhs:
+
+                    if s.kind == "T":
+
+                        ts.add(s.name)
+
+        ts.add(END)
+
+        return ts
+
+
+
+    # ---------- FIRST/FOLLOW ----------
+
+    def _first_of_sequence(self, seq: List[Sym]) -> Set[str]:
+
+        """Return FIRST(seq) including EPS if nullable."""
+
+        if not seq:
+
+            return {EPS}
+
+        out: Set[str] = set()
+
+        for sym in seq:
+
+            if sym.kind == "T":
+
+                out.add(sym.name)
+
+                return out
+
+            # nonterminal
+
+            out |= (self.first[sym.name] - {EPS})
+
+            if EPS not in self.first[sym.name]:
+
+                return out
+
+        out.add(EPS)
+
+        return out
+
+
+
+    def _compute_first(self):
+
+        changed = True
+
+        while changed:
+
+            changed = False
+
+            for A, alts in self.prods.items():
+
+                for rhs in alts:
+
+                    f = self._first_of_sequence(rhs)
+
+                    before = len(self.first[A])
+
+                    self.first[A] |= f
+
+                    if len(self.first[A]) != before:
+
+                        changed = True
+
+
+
+    def _compute_follow(self):
+
+        # Start symbol gets $
+
+        self.follow[self.start_symbol].add(END)
+
+
+
+        changed = True
+
+        while changed:
+
+            changed = False
+
+            for A, alts in self.prods.items():
+
+                for rhs in alts:
+
+                    for i, B in enumerate(rhs):
+
+                        if B.kind != "N":
+
+                            continue
+
+                        beta = rhs[i + 1:]
+
+                        first_beta = self._first_of_sequence(beta)
+
+                        # add FIRST(beta) - EPS
+
+                        before = len(self.follow[B.name])
+
+                        self.follow[B.name] |= (first_beta - {EPS})
+
+                        if len(self.follow[B.name]) != before:
+
+                            changed = True
+
+                        # if beta nullable, add FOLLOW(A)
+
+                        if EPS in first_beta:
+
+                            before = len(self.follow[B.name])
+
+                            self.follow[B.name] |= self.follow[A]
+
+                            if len(self.follow[B.name]) != before:
+
+                                changed = True
+
+
+
+    # ---------- Parse table ----------
+
+    def _build_parse_table(self):
+
+        # LL(1) table: M[A,a] = production
+
+        for A, alts in self.prods.items():
+
+            for rhs in alts:
+
+                first_rhs = self._first_of_sequence(rhs)
+
+                for a in (first_rhs - {EPS}):
+
+                    self.table[(A, a)] = rhs
+
+                if EPS in first_rhs:
+
+                    for b in self.follow[A]:
+
+                        self.table[(A, b)] = rhs
+
+
+
+    # ---------- Parsing with panic-mode ----------
+
+    def parse(self) -> Node:
+
+        root = Node(self.start_symbol)
+
+
+
+        # Stack holds pairs: (grammar symbol, node-to-fill)
+
+        stack: List[Tuple[Sym, Node]] = []
+
+        stack.append((T(END), root))
+
+        stack.append((N(self.start_symbol), root))
+
+
+
+        while stack:
+
+            top_sym, top_node = stack.pop()
+
+            la_tok = self._lookahead_token()
+
+            la = self._la_symbol()
+
+            line = la_tok[2]
+
+            if top_sym.kind == "T":
+
+                # terminal
+
+                if top_sym.name == END:
+
+                    if la == END:
+                        root.add(Node("$"))
+
+                        break
+                    self.errors.append(f"#{line} : syntax error, illegal {la_tok[1]}")
+
+                    self._advance()
+                    stack.append((top_sym, top_node))
+                    continue
+
+
+
+                if la == top_sym.name:
+
+                    # match: add terminal node under its parent node in tree
+
+                    # Here, top_node is already placed in tree; we just set it to token.
+
+                    # Simpler: rename top_node to exact token representation.
+
+                    tok_node = self._token_for_tree()
+
+                    top_node.name = tok_node.name
+
+                    self._advance()
+
                 else:
-                    # This is a variable declaration like "int x;"
-                    self.pos = current_pos
-                    self.errors.append(f"#{tok[2]} : syntax error, illegal {la_val}")
-                    self.advance()  # Skip the type keyword
-                    node.add(self.Expression_stmt())  # Parse the remaining as expression-stmt
+
+                    # terminal mismatch => missing <terminal>, pop (do not consume input)
+
+                    self.errors.append(f"#{line} : syntax error, missing {top_sym.name}")
+
+                    # Keep a placeholder as in your sample: (SYMBOL, ;) etc.
+
+                    # Decide placeholder category:
+
+                    if top_sym.name in {"ID", "NUM"}:
+
+                        top_node.name = f"({top_sym.name}, )"
+
+                    elif top_sym.name.isalpha():
+
+                        top_node.name = f"(KEYWORD, {top_sym.name})"
+
+                    else:
+
+                        top_node.name = f"(SYMBOL, {top_sym.name})"
+
+                continue
+
+
+
+            # nonterminal
+
+            A = top_sym.name
+
+            key = (A, la)
+
+            if key in self.table:
+
+                rhs = self.table[key]
+
+                if rhs == []:
+
+                    # epsilon production
+
+                    top_node.add(Node("epsilon"))
+
+                    continue
+
+
+
+                # expand: create children nodes in order, push in reverse
+
+                child_nodes: List[Tuple[Sym, Node]] = []
+
+                for sym in rhs:
+
+                    child = Node(sym.name if sym.kind == "N" else f"(SYMBOL, {sym.name})")
+
+                    top_node.add(child)
+
+                    child_nodes.append((sym, child))
+
+
+
+                for sym, child in reversed(child_nodes):
+
+                    stack.append((sym, child))
+
             else:
-                self.pos = current_pos
-                self.errors.append(f"#{tok[2]} : syntax error, illegal {la_val}")
-                self.panic({";", "}", "else", "$"})
-                node.add(self.epsilon())
-        else:
-            self.errors.append(f"#{tok[2]} : syntax error, illegal {la_val}")
-            self.panic({";", "}", "else", "$"})
-            if self.lookahead()[1] == ";":
-                node.add(self.match(";"))
-            else:
-                node.add(self.epsilon())
-        return node
 
-    # =================== Statements ===================
-    def Expression_stmt(self):
-        node = Node("Expression-stmt")
-        la_type, la_val, la_line = self.lookahead()
-        if la_val == ";":
-            node.add(self.match(";"))
-        elif la_type in {"ID", "NUM"} or la_val in {"(", "+", "-"}:
-            node.add(self.Expression())
-            # Check for missing semicolon
-            if self.lookahead()[1] == ";":
-                node.add(self.match(";"))
-            else:
-                self.errors.append(f"#{self.lookahead()[2]} : syntax error, missing ;")
-                # Don't panic, just continue
-        elif la_val == "break":
-            node.add(self.match("break"))
-            # Check for missing semicolon
-            if self.lookahead()[1] == ";":
-                node.add(self.match(";"))
-            else:
-                self.errors.append(f"#{self.lookahead()[2]} : syntax error, missing ;")
-                # Don't panic, just continue
-        else:
-            self.errors.append(f"#{la_line} : syntax error, illegal {la_val}")
-            self.panic({";", "}", "$"})
-            if self.lookahead()[1] == ";":
-                node.add(self.match(";"))
-            else:
-                node.add(self.epsilon())
-        return node
+                # no table entry => panic-mode for nonterminal A
 
-    def Selection_stmt(self):
-        node = Node("Selection-stmt")
-        node.add(self.match("if"))
-        node.add(self.match("("))
-        node.add(self.Expression())
-        # Check for missing closing paren
-        if self.lookahead()[1] == ")":
-            node.add(self.match(")"))
-        else:
-            line = self.lookahead()[2]
-            self.errors.append(f"#{line} : syntax error, missing )")
-        node.add(self.Statement())
-        node.add(self.Else_stmt())
-        return node
+                if la in self.follow[A] or la in SYNC:
 
-    def Else_stmt(self):
-        node = Node("Else-stmt")
-        if self.lookahead()[1] == "else":
-            node.add(self.match("else"))
-            node.add(self.Statement())
-        else:
-            node.add(self.epsilon())
-        return node
+                    self.errors.append(f"#{line} : syntax error, missing {A}")
 
-    def Iteration_stmt(self):
-        node = Node("Iteration-stmt")
-        node.add(self.match("for"))
-        node.add(self.match("("))
-        node.add(self.Expression())
-        node.add(self.match(";"))
-        node.add(self.Expression())
-        node.add(self.match(";"))
-        node.add(self.Expression())
-        node.add(self.match(")"))
-        node.add(self.Compound_stmt())
-        return node
+                    #top_node.add(Node("epsilon"))
+                    continue
 
-    def Return_stmt(self):
-        node = Node("Return-stmt")
-        node.add(self.match("return"))
-        node.add(self.Return_stmt_prime())
-        return node
+                else:
 
-    def Return_stmt_prime(self):
-        node = Node("Return-stmt-prime")
-        if self.lookahead()[1] == ";":
-            node.add(self.match(";"))
-        else:
-            # Could have expression without semicolon
-            node.add(self.Expression())
-            # Check for missing semicolon
-            if self.lookahead()[1] == ";":
-                node.add(self.match(";"))
-            else:
-                self.errors.append(f"#{self.lookahead()[2]} : syntax error, missing ;")
-                # Don't panic, just continue
-        return node
+                    # illegal token: discard input token
 
-    # =================== Expression ===================
-    def Expression(self):
-        node = Node("Expression")
-        la_type, la_val, la_line = self.lookahead()
-        if la_type == "ID":
-            node.add(Node(f"(ID, {la_val})"))
-            self.advance()
-            node.add(self.B())
-        elif la_type == "NUM" or la_val in {"(", "+", "-"}:
-            node.add(self.Simple_expression_zegond())
-        else:
-            self.errors.append(f"#{la_line} : syntax error, illegal Expression")
-            self.panic({";", ")", "]", ",", "}", "$"})
-            node.add(self.epsilon())
-        return node
+                    if la == END:
 
-    # =================== B, H, Simple-expression ===================
-    def B(self):
-        node = Node("B")
-        la = self.lookahead()[1]
-        if la == "=":
-            node.add(self.match("="))
-            node.add(self.Expression())
-        elif la == "[":
-            node.add(self.match("["))
-            node.add(self.Expression())
-            node.add(self.match("]"))
-            node.add(self.H())
-        else:
-            node.add(self.Simple_expression_prime())
-        return node
+                        # avoid infinite loop: if EOF and still no entry, pop A as missing
 
-    def H(self):
-        node = Node("H")
-        la = self.lookahead()[1]
-        if la == "=":
-            node.add(self.match("="))
-            node.add(self.Expression())
-        else:
-            node.add(self.G())
-            node.add(self.D())
-            node.add(self.C())
-        return node
+                        self.errors.append(f"#{line} : syntax error, missing {A}")
 
-    def Simple_expression_zegond(self):
-        node = Node("Simple-expression-zegond")
-        node.add(self.Additive_expression_zegond())
-        node.add(self.C())
-        return node
+                        top_node.add(Node("epsilon"))
 
-    def Simple_expression_prime(self):
-        node = Node("Simple-expression-prime")
-        node.add(self.Additive_expression_prime())
-        node.add(self.C())
-        return node
+                    else:
 
-    # =================== C, Relop, Additive ===================
-    def C(self):
-        node = Node("C")
-        la = self.lookahead()[1]
-        if la in {"<", "=="}:
-            node.add(self.Relop())
-            node.add(self.Additive_expression())
-        else:
-            node.add(self.epsilon())
-        return node
+                        self.errors.append(f"#{line} : syntax error, illegal {la_tok[1]}")
 
-    def Relop(self):
-        node = Node("Relop")
-        la = self.lookahead()[1]
-        if la in {"==", "<"}:
-            node.add(self.match(la))
-        else:
-            self.errors.append(f"#{self.lookahead()[2]} : syntax error, missing relop")
-            node.add(self.epsilon())
-        return node
+                        self._advance()
 
-    def Additive_expression(self):
-        node = Node("Additive-expression")
-        node.add(self.Term())
-        node.add(self.D())
-        return node
+                        # IMPORTANT: retry same nonterminal by pushing it back
 
-    def Additive_expression_prime(self):
-        node = Node("Additive-expression-prime")
-        node.add(self.Term_prime())
-        node.add(self.D())
-        return node
+                        stack.append((top_sym, top_node))
 
-    def Additive_expression_zegond(self):
-        node = Node("Additive-expression-zegond")
-        node.add(self.Term_zegond())
-        node.add(self.D())
-        return node
 
-    def D(self):
-        node = Node("D")
-        la = self.lookahead()[1]
-        if la in {"+", "-"}:
-            node.add(self.Addop())
-            node.add(self.Term())
-            node.add(self.D())
-        else:
-            node.add(self.epsilon())
-        return node
 
-    def Addop(self):
-        node = Node("Addop")
-        la = self.lookahead()[1]
-        if la in {"+", "-"}:
-            node.add(self.match(la))
-        else:
-            self.errors.append(f"#{self.lookahead()[2]} : syntax error, missing addop")
-            node.add(self.epsilon())
-        return node
-
-    # =================== Term / Factor ===================
-    def Term(self):
-        node = Node("Term")
-        node.add(self.Signed_factor())
-        node.add(self.G())
-        return node
-
-    def Term_prime(self):
-        node = Node("Term-prime")
-        node.add(self.Factor_prime())
-        node.add(self.G())
-        return node
-
-    def Term_zegond(self):
-        node = Node("Term-zegond")
-        node.add(self.Signed_factor_zegond())
-        node.add(self.G())
-        return node
-
-    def G(self):
-        node = Node("G")
-        la = self.lookahead()[1]
-        if la in {"*", "/"}:
-            node.add(self.match(la))
-            node.add(self.Signed_factor())
-            node.add(self.G())
-        else:
-            node.add(self.epsilon())
-        return node
-
-    def Signed_factor(self):
-        node = Node("Signed-factor")
-        la = self.lookahead()[1]
-        if la in {"+", "-"}:
-            node.add(self.match(la))
-            node.add(self.Factor())
-        else:
-            node.add(self.Factor())
-        return node
-
-    def Signed_factor_zegond(self):
-        node = Node("Signed-factor-zegond")
-        la = self.lookahead()[1]
-        if la in {"+", "-"}:
-            node.add(self.match(la))
-            node.add(self.Factor_zegond())
-        else:
-            node.add(self.Factor_zegond())
-        return node
-
-    def Factor(self):
-        node = Node("Factor")
-        la_type, la_val, la_line = self.lookahead()
-        if la_val == "(":
-            node.add(self.match("("))
-            node.add(self.Expression())
-            node.add(self.match(")"))
-        elif la_type == "ID":
-            node.add(Node(f"(ID, {la_val})"))
-            self.advance()
-            node.add(self.Var_call_prime())
-        elif la_type == "NUM":
-            node.add(Node(f"(NUM, {la_val})"))
-            self.advance()
-        else:
-            self.errors.append(f"#{la_line} : syntax error, illegal Factor")
-            self.panic({"+", "-", "*", "/", ";", ")", "]", "$"})
-            node.add(self.epsilon())
-        return node
-
-    def Factor_zegond(self):
-        node = Node("Factor-zegond")
-        la_type, la_val, la_line = self.lookahead()
-        if la_type == "NUM":
-            node.add(Node(f"(NUM, {la_val})"))
-            self.advance()
-        elif la_val == "(":
-            node.add(self.match("("))
-            node.add(self.Expression())
-            node.add(self.match(")"))
-        else:
-            self.errors.append(f"#{la_line} : syntax error, illegal Factor-zegond")
-            self.panic({"+", "-", "*", "/", ";", ")", "]", "$"})
-            node.add(self.epsilon())
-        return node
-
-    # =================== Var / Args ===================
-    def Var_call_prime(self):
-        node = Node("Var-call-prime")
-        la = self.lookahead()[1]
-        if la == "(":
-            node.add(self.match("("))
-            node.add(self.Args())
-            node.add(self.match(")"))
-        else:
-            node.add(self.Var_prime())
-        return node
-
-    def Var_prime(self):
-        node = Node("Var-prime")
-        la = self.lookahead()[1]
-        if la == "[":
-            node.add(self.match("["))
-            node.add(self.Expression())
-            node.add(self.match("]"))
-        else:
-            node.add(self.epsilon())
-        return node
-
-    def Factor_prime(self):
-        node = Node("Factor-prime")
-        if self.lookahead()[1] == "(":
-            node.add(self.match("("))
-            node.add(self.Args())
-            node.add(self.match(")"))
-        else:
-            node.add(self.epsilon())
-        return node
-
-    def Args(self):
-        node = Node("Args")
-        if self.lookahead()[1] == ")":
-            node.add(self.epsilon())
-        else:
-            node.add(self.Arg_list())
-        return node
-
-    def Arg_list(self):
-        node = Node("Arg-list")
-        node.add(self.Expression())
-        node.add(self.Arg_list_prime())
-        return node
-
-    def Arg_list_prime(self):
-        node = Node("Arg-list-prime")
-        if self.lookahead()[1] == ",":
-            node.add(self.match(","))
-            node.add(self.Expression())
-            node.add(self.Arg_list_prime())
-        else:
-            node.add(self.epsilon())
-        return node
+        return root
 
 
 # =========================================================
@@ -1058,7 +1184,7 @@ def main():
     tokens.append(("$", "$" , scanner.lineno))
 
     parser = Parser(tokens)
-    tree = parser.Program()
+    tree = parser.parse()
 
     with open("parse_tree.txt", "w", encoding="utf-8") as f:
         tree.print(f)

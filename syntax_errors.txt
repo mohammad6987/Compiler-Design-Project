@@ -1,3 +1,4 @@
 #3 : syntax error, missing ID
+#3 : syntax error, missing Param-prime
+#3 : syntax error, missing Param-list
 #3 : syntax error, missing )
-#3 : syntax error, illegal {
