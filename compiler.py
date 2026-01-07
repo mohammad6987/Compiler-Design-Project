@@ -319,6 +319,10 @@ class Node:
 
         self.hidden = False
 
+        self.abort = False
+
+        self.matched = False
+
 
 
     def add(self, child: "Node"):
@@ -328,22 +332,24 @@ class Node:
 
 
     def print(self, f, prefix="", is_last=True):
-
-        if self.hidden:
+        if hasattr(self, "hidden") and self.hidden:
             return
+        visible_children = []
+        for c in self.children:
+            if hasattr(c, "hidden") and c.hidden:
+                continue
+            # skip empty nonterminals
+            if c.children == [] and c.name not in ("epsilon", "$") and not c.name.startswith("("):
+                continue
+            visible_children.append(c)
 
         if prefix == "":
-
             f.write(self.name + "\n")
-
         else:
-
             f.write(prefix + ("└── " if is_last else "├── ") + self.name + "\n")
 
         child_prefix = prefix + ("    " if is_last else "│   ")
-        visible_children = [c for c in self.children if not c.hidden]
         for i, child in enumerate(visible_children):
-
             child.print(f, child_prefix, i == len(visible_children) - 1)
 
 
@@ -351,7 +357,32 @@ EPS = "EPSILON"
 
 END = "$"
 
-SYNC = {")", "]", "}" , "{", ";", ","}
+
+EXPR_NTS = {
+
+    "Expression","B","H","Simple-expression-zegond","Simple-expression-prime",
+
+    "C","Relop",
+
+    "Additive-expression","Additive-expression-prime","Additive-expression-zegond",
+
+    "D","Addop",
+
+    "Term","Term-prime","Term-zegond",
+
+    "G","Signed-factor","Signed-factor-zegond",
+
+    "Factor","Factor-zegond",
+
+    "Var-call-prime","Var-prime","Factor-prime",
+
+    "Args","Arg-list","Arg-list-prime",
+
+}
+
+
+
+SYNC_EXPR = {")", "]", ";", ",", "}"}
 
 @dataclass(frozen=True)
 
@@ -383,14 +414,9 @@ class Parser:
 
         self.prods: Dict[str, List[List[Sym]]] = self._build_grammar()
 
-
-
         self.nonterminals = set(self.prods.keys())
 
         self.terminals = self._collect_terminals()
-
-
-
 
         self.first: Dict[str, Set[str]] = {nt: set() for nt in self.nonterminals}
 
@@ -398,23 +424,66 @@ class Parser:
 
         self.table: Dict[Tuple[str, str], List[Sym]] = {}
 
-
-
         self._compute_first()
 
         self._compute_follow()
 
         self._build_parse_table()
 
+        self.sync_tokens: Dict[str, Set[str]] = {
+            "Program": {"$"},
+            "Declaration-list": {"$", "}"},
+            "Declaration": {"int", "void", "$", "}"},
+            "Declaration-initial": {";", "(", "["},
+            "Declaration-prime": {"int", "void", "$", "}"},
+            "Fun-declaration-prime": {"int", "void", "$", "}"},
+            "Var-declaration-prime": {"int", "void", "$", "}"},
+            "Type-specifier": {"ID"},
+            "Params": {")"},
+            "Param-list": {")"},
+            "Param": {")", ","},
+            "Param-prime": {")", ","},
+            "Compound-stmt": {"}", "$", "else"},
+            "Statement-list": {"}"},
+            "Statement": {"}", "else", "int", "void", "if", "for", "return", "break", "ID", "NUM", "(", "+", "-", ";"},
+            "Expression-stmt": {"}", "int", "void", "if", "for", "return", "break", "ID", "NUM", "(", "+", "-", ";"},
+            "Selection-stmt": {"}", "int", "void", "if", "for", "return", "break", "ID", "NUM", "(", "+", "-", ";"},
+            "Else-stmt": {"}", "int", "void", "if", "for", "return", "break", "ID", "NUM", "(", "+", "-", ";"},
+            "Iteration-stmt": {"}", "int", "void", "if", "for", "return", "break", "ID", "NUM", "(", "+", "-", ";"},
+            "Return-stmt": {"}", "int", "void", "if", "for", "return", "break", "ID", "NUM", "(", "+", "-", ";"},
+            "Return-stmt-prime": {"}", "int", "void", "if", "for", "return", "break", "ID", "NUM", "(", "+", "-", ";"},
+            "Expression": {";", ")", "]", ",", "}"},
+            "B": {";", ")", "]", ",", "}"},
+            "H": {";", ")", "]", ",", "}"},
+            "Simple-expression-zegond": {";", ")", "]", ",", "}"},
+            "Simple-expression-prime": {";", ")", "]", ",", "}"},
+            "C": {";", ")", "]", ",", "}"},
+            "Relop": {"ID", "NUM", "(", "+", "-"},
+            "Additive-expression": {";", ")", "]", ",", "}", "<", "=="},
+            "Additive-expression-prime": {";", ")", "]", ",", "}", "<", "=="},
+            "Additive-expression-zegond": {";", ")", "]", ",", "}", "<", "=="},
+            "D": {";", ")", "]", ",", "}", "<", "=="},
+            "Addop": {"ID", "NUM", "(", "+", "-"},
+            "Term": {";", ")", "]", ",", "}", "<", "==", "+", "-"},
+            "Term-prime": {";", ")", "]", ",", "}", "<", "==", "+", "-"},
+            "Term-zegond": {";", ")", "]", ",", "}", "<", "==", "+", "-"},
+            "G": {";", ")", "]", ",", "}", "<", "==", "+", "-"},
+            "Signed-factor": {";", ")", "]", ",", "}", "<", "==", "+", "-", "*", "/"},
+            "Signed-factor-zegond": {";", ")", "]", ",", "}", "<", "==", "+", "-", "*", "/"},
+            "Factor": {";", ")", "]", ",", "}", "<", "==", "+", "-", "*", "/"},
+            "Factor-prime": {";", ")", "]", ",", "}", "<", "==", "+", "-", "*", "/"},
+            "Factor-zegond": {";", ")", "]", ",", "}", "<", "==", "+", "-", "*", "/"},
+            "Var-call-prime": {";", ")", "]", ",", "}", "<", "==", "+", "-", "*", "/"},
+            "Var-prime": {";", ")", "]", ",", "}", "<", "==", "+", "-", "*", "/"},
+            "Args": {")"},
+            "Arg-list": {")"},
+            "Arg-list-prime": {")"},
+        }
 
-
-    # ---------- Token utilities ----------
 
     def _lookahead_token(self) -> Token:
 
         if self.pos >= len(self.tokens):
-
-            # EOF line = last token line if exists else 0
 
             last_line = self.tokens[-1][2] if self.tokens else 0
 
@@ -433,8 +502,6 @@ class Parser:
 
 
     def _la_symbol(self) -> str:
-
-        """Map the current token to a grammar terminal string."""
 
         ttype, tval, _ = self._lookahead_token()
 
@@ -457,8 +524,6 @@ class Parser:
         if ttype == END:
 
             return Node("$")
-
-        # match your output: (KEYWORD, void) / (ID, a) / (SYMBOL, {) ...
 
         return Node(f"({ttype}, {tval})")
 
@@ -689,8 +754,6 @@ class Parser:
         add("Relop", [T("==")])
 
         add("Relop", [T("<")])
-
-        add("Relop", [T(">")])
 
 
 
@@ -960,8 +1023,6 @@ class Parser:
 
                             changed = True
 
-                        # if beta nullable, add FOLLOW(A)
-
                         if EPS in first_beta:
 
                             before = len(self.follow[B.name])
@@ -993,168 +1054,100 @@ class Parser:
                             self.table[(A, b)] = rhs
 
 
-
-
-    # ---------- Parsing with panic-mode ----------
-
     def parse(self) -> Node:
-
         root = Node(self.start_symbol)
-
-
-
-        # Stack holds pairs: (grammar symbol, node-to-fill)
-
         stack: List[Tuple[Sym, Node]] = []
-
         stack.append((T(END), root))
-
         stack.append((N(self.start_symbol), root))
 
-
-
         while stack:
-
             top_sym, top_node = stack.pop()
-
             la_tok = self._lookahead_token()
-
             la = self._la_symbol()
-
             line = la_tok[2]
 
             if top_sym.kind == "T":
-
                 # terminal
-
                 if top_sym.name == END:
-
                     if la == END:
                         root.add(Node("$"))
-
                         break
                     self.errors.append(f"#{line} : syntax error, illegal {la_tok[1]}")
-
                     self._advance()
                     stack.append((top_sym, top_node))
                     continue
 
-
-
                 if la == top_sym.name:
-
-                    # match: add terminal node under its parent node in tree
-
-                    # Here, top_node is already placed in tree; we just set it to token.
-
-                    # Simpler: rename top_node to exact token representation.
-
+                    # match
                     tok_node = self._token_for_tree()
-
                     top_node.name = tok_node.name
-
+                    top_node.matched = True
                     self._advance()
-
                 else:
-
-                    # terminal mismatch => missing <terminal>, pop (do not consume input)
-
+                    # terminal mismatch => missing <terminal>
                     self.errors.append(f"#{line} : syntax error, missing {top_sym.name}")
-
-                    # Keep a placeholder as in your sample: (SYMBOL, ;) etc.
-
-                    # Decide placeholder category:
-
-                    if top_sym.name in {"ID", "NUM"}:
-
-                        top_node.name = f"({top_sym.name}, )"
-
-                    elif top_sym.name.isalpha():
-
-                        top_node.name = f"(KEYWORD, {top_sym.name})"
-
-                    else:
-
-                        top_node.name = f"(SYMBOL, {top_sym.name})"
-
+                    top_node.hidden = True
+                    top_node.matched = False
                 continue
 
-
-
             # nonterminal
-
             A = top_sym.name
-
             key = (A, la)
-
+            
             if key in self.table:
-
-                rhs = self.table[key]
-
-                if rhs == []:
-
-                    # epsilon production
-
-                    top_node.add(Node("epsilon"))
-
+                if top_node.abort:
                     continue
-
-
-
-                # expand: create children nodes in order, push in reverse
-
+                rhs = self.table[key]
+                if rhs == []:
+              
+                    if top_node.abort:
+                        continue
+                    epsilon_node = Node("epsilon")
+                    top_node.add(epsilon_node)
+                    continue
+                    
                 child_nodes: List[Tuple[Sym, Node]] = []
-
                 for sym in rhs:
-
-                    child = Node(sym.name if sym.kind == "N" else f"(SYMBOL, {sym.name})")
-
+                    if sym.kind == "N":
+                        child = Node(sym.name)
+                    else:
+                        # Create terminal node with proper format
+                        if sym.name in {"ID", "NUM"}:
+                            child = Node(f"({sym.name}, )")
+                        elif sym.name in KEYWORDS:
+                            child = Node(f"(KEYWORD, {sym.name})")
+                        else:
+                            child = Node(f"(SYMBOL, {sym.name})")
                     top_node.add(child)
-
                     child_nodes.append((sym, child))
-
-
-
+                    
                 for sym, child in reversed(child_nodes):
-
                     stack.append((sym, child))
-
             else:
-
-
-                if la in self.follow[A] or la in SYNC:
+                # no table entry
+                if la in self.follow[A] or la in self.sync_tokens.get(A, set()):
 
                     self.errors.append(f"#{line} : syntax error, missing {A}")
+                    top_node.abort = True
                     top_node.hidden = True
-                    #top_node.add(Node("epsilon"))
+                    #epsilon_node = Node("epsilon")
+                    #top_node.add(epsilon_node)
                     continue
-
                 else:
-
-                    # illegal token: discard input token
-
                     if la == END:
-
-                        # avoid infinite loop: if EOF and still no entry, pop A as missing
-
-                        self.errors.append(f"#{line} : syntax error, missing {A}")
-
-                        top_node.add(Node("epsilon"))
-
+                        # Unexpected EOF
+                        self.errors.append(f"#{line} : syntax error, Unexpected EOF")
+                        break
                     else:
-
-                        self.errors.append(f"#{line} : syntax error, illegal {la_tok[1]}")
-
+                        # illegal token
+                        if la_tok[0] in ("ID", "NUM"):
+                            self.errors.append(f"#{line} : syntax error, illegal {la_tok[0]}")
+                        else:
+                            self.errors.append(f"#{line} : syntax error, illegal {la_tok[1]}")
                         self._advance()
-
-                        # IMPORTANT: retry same nonterminal by pushing it back
-
                         stack.append((top_sym, top_node))
 
-
-
         return root
-
 
 # =========================================================
 # ========================== MAIN =========================

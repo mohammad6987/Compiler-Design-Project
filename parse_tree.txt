@@ -1,86 +1,9 @@
 Program
-    ├── Declaration-list
-    │   ├── Declaration
-    │   │   ├── Declaration-initial
-    │   │   │   ├── Type-specifier
-    │   │   │   │   └── (KEYWORD, void)
-    │   │   │   └── (ID, main)
-    │   │   └── Declaration-prime
-    │   │       └── Fun-declaration-prime
-    │   │           ├── (SYMBOL, ()
-    │   │           ├── Params
-    │   │           │   ├── (KEYWORD, int)
-    │   │           │   ├── (ID, )
-    │   │           │   ├── Param-prime
-    │   │           │   └── Param-list
-    │   │           ├── (SYMBOL, ))
-    │   │           └── Compound-stmt
-    │   │               ├── (SYMBOL, {)
-    │   │               ├── Declaration-list
-    │   │               │   ├── Declaration
-    │   │               │   │   ├── Declaration-initial
-    │   │               │   │   │   ├── Type-specifier
-    │   │               │   │   │   │   └── (KEYWORD, int)
-    │   │               │   │   │   └── (ID, test)
-    │   │               │   │   └── Declaration-prime
-    │   │               │   │       └── Var-declaration-prime
-    │   │               │   │           └── (SYMBOL, ;)
-    │   │               │   └── Declaration-list
-    │   │               │       ├── Declaration
-    │   │               │       │   ├── Declaration-initial
-    │   │               │       │   │   ├── Type-specifier
-    │   │               │       │   │   │   └── (KEYWORD, int)
-    │   │               │       │   │   └── (ID, i)
-    │   │               │       │   └── Declaration-prime
-    │   │               │       │       └── Var-declaration-prime
-    │   │               │       │           └── (SYMBOL, ;)
-    │   │               │       └── Declaration-list
-    │   │               │           └── epsilon
-    │   │               ├── Statement-list
-    │   │               │   ├── Statement
-    │   │               │   │   └── Expression-stmt
-    │   │               │   │       ├── Expression
-    │   │               │   │       │   ├── (ID, test)
-    │   │               │   │       │   └── B
-    │   │               │   │       │       ├── (SYMBOL, =)
-    │   │               │   │       │       └── Expression
-    │   │               │   │       │           └── Simple-expression-zegond
-    │   │               │   │       │               ├── Additive-expression-zegond
-    │   │               │   │       │               │   ├── Term-zegond
-    │   │               │   │       │               │   │   ├── Signed-factor-zegond
-    │   │               │   │       │               │   │   │   └── Factor-zegond
-    │   │               │   │       │               │   │   │       └── (NUM, 1)
-    │   │               │   │       │               │   │   └── G
-    │   │               │   │       │               │   │       └── epsilon
-    │   │               │   │       │               │   └── D
-    │   │               │   │       │               │       └── epsilon
-    │   │               │   │       │               └── C
-    │   │               │   │       │                   └── epsilon
-    │   │               │   │       └── (SYMBOL, ;)
-    │   │               │   └── Statement-list
-    │   │               │       ├── Statement
-    │   │               │       │   └── Expression-stmt
-    │   │               │       │       ├── Expression
-    │   │               │       │       │   ├── (ID, i)
-    │   │               │       │       │   └── B
-    │   │               │       │       │       ├── (SYMBOL, =)
-    │   │               │       │       │       └── Expression
-    │   │               │       │       │           └── Simple-expression-zegond
-    │   │               │       │       │               ├── Additive-expression-zegond
-    │   │               │       │       │               │   ├── Term-zegond
-    │   │               │       │       │               │   │   ├── Signed-factor-zegond
-    │   │               │       │       │               │   │   │   └── Factor-zegond
-    │   │               │       │       │               │   │   │       └── (NUM, 1)
-    │   │               │       │       │               │   │   └── G
-    │   │               │       │       │               │   │       └── epsilon
-    │   │               │       │       │               │   └── D
-    │   │               │       │       │               │       └── epsilon
-    │   │               │       │       │               └── C
-    │   │               │       │       │                   └── epsilon
-    │   │               │       │       └── (SYMBOL, ;)
-    │   │               │       └── Statement-list
-    │   │               │           └── epsilon
-    │   │               └── (SYMBOL, })
-    │   └── Declaration-list
-    │       └── epsilon
-    └── $
+    └── Declaration-list
+        └── Declaration
+            ├── Declaration-initial
+            │   ├── Type-specifier
+            └── Declaration-prime
+                └── Fun-declaration-prime
+                    ├── Params
+                    └── (SYMBOL, ))
