@@ -304,7 +304,7 @@ from typing import List, Tuple, Dict, Set, Optional
 
 
 
-Token = Tuple[str, str, int]  # (type, value, line)
+Token = Tuple[str, str, int]  
 
 
 
@@ -317,6 +317,8 @@ class Node:
 
         self.children: List["Node"] = []
 
+        self.hidden = False
+
 
 
     def add(self, child: "Node"):
@@ -327,6 +329,9 @@ class Node:
 
     def print(self, f, prefix="", is_last=True):
 
+        if self.hidden:
+            return
+
         if prefix == "":
 
             f.write(self.name + "\n")
@@ -336,10 +341,10 @@ class Node:
             f.write(prefix + ("└── " if is_last else "├── ") + self.name + "\n")
 
         child_prefix = prefix + ("    " if is_last else "│   ")
+        visible_children = [c for c in self.children if not c.hidden]
+        for i, child in enumerate(visible_children):
 
-        for i, child in enumerate(self.children):
-
-            child.print(f, child_prefix, i == len(self.children) - 1)
+            child.print(f, child_prefix, i == len(visible_children) - 1)
 
 
 EPS = "EPSILON"
@@ -364,8 +369,6 @@ def N(x): return Sym("N", x)
 
 
 
-
-
 class Parser:
 
     def __init__(self, tokens: List[Token]):
@@ -375,12 +378,6 @@ class Parser:
         self.pos = 0
 
         self.errors: List[str] = []
-
-
-
-        # Grammar as productions: A -> [alpha1, alpha2, ...]
-
-        # where each alpha is a list of Sym; empty list represents EPSILON.
 
         self.start_symbol = "Program"
 
@@ -394,7 +391,6 @@ class Parser:
 
 
 
-        # FIRST/FOLLOW/PARSE TABLE
 
         self.first: Dict[str, Set[str]] = {nt: set() for nt in self.nonterminals}
 
@@ -683,7 +679,7 @@ class Parser:
         # C -> Relop Additive-expression | EPSILON
 
         add("C", [N("Relop"), N("Additive-expression")])
-
+    
         add("C", [])
 
 
@@ -981,24 +977,21 @@ class Parser:
     # ---------- Parse table ----------
 
     def _build_parse_table(self):
-
-        # LL(1) table: M[A,a] = production
-
         for A, alts in self.prods.items():
-
             for rhs in alts:
-
                 first_rhs = self._first_of_sequence(rhs)
 
+                # FIRST(rhs) entries
                 for a in (first_rhs - {EPS}):
+                    if (A, a) not in self.table:     
+                        self.table[(A, a)] = rhs
 
-                    self.table[(A, a)] = rhs
-
+                # EPSILON entries → FOLLOW(A)
                 if EPS in first_rhs:
-
                     for b in self.follow[A]:
+                        if (A, b) not in self.table: 
+                            self.table[(A, b)] = rhs
 
-                        self.table[(A, b)] = rhs
 
 
 
@@ -1128,12 +1121,11 @@ class Parser:
 
             else:
 
-                # no table entry => panic-mode for nonterminal A
 
                 if la in self.follow[A] or la in SYNC:
 
                     self.errors.append(f"#{line} : syntax error, missing {A}")
-
+                    top_node.hidden = True
                     #top_node.add(Node("epsilon"))
                     continue
 
