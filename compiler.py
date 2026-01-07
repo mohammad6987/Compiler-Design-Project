@@ -321,7 +321,7 @@ class Node:
 
         self.abort = False
 
-        self.matched = False
+        self.matched = None
 
 
 
@@ -338,9 +338,13 @@ class Node:
         for c in self.children:
             if hasattr(c, "hidden") and c.hidden:
                 continue
-            # skip empty nonterminals
+
             if c.children == [] and c.name not in ("epsilon", "$") and not c.name.startswith("("):
                 continue
+            
+            if c.children == [] and hasattr(c, "matched") and c.matched == False:
+                continue
+                
             visible_children.append(c)
 
         if prefix == "":
@@ -927,8 +931,6 @@ class Parser:
 
 
 
-    # ---------- FIRST/FOLLOW ----------
-
     def _first_of_sequence(self, seq: List[Sym]) -> Set[str]:
 
         """Return FIRST(seq) including EPS if nullable."""
@@ -1035,8 +1037,6 @@ class Parser:
 
 
 
-    # ---------- Parse table ----------
-
     def _build_parse_table(self):
         for A, alts in self.prods.items():
             for rhs in alts:
@@ -1081,11 +1081,12 @@ class Parser:
                     # match
                     tok_node = self._token_for_tree()
                     top_node.name = tok_node.name
-                    top_node.matched = True
+                    tok_node.matched = True
                     self._advance()
                 else:
                     # terminal mismatch => missing <terminal>
                     self.errors.append(f"#{line} : syntax error, missing {top_sym.name}")
+                    top_node.name = f"missing {top_sym.name}"
                     top_node.hidden = True
                     top_node.matched = False
                 continue
@@ -1093,13 +1094,14 @@ class Parser:
             # nonterminal
             A = top_sym.name
             key = (A, la)
-            
+
             if key in self.table:
                 if top_node.abort:
                     continue
                 rhs = self.table[key]
-                if rhs == []:
-              
+                
+                # Special handling for EPSILON production
+                if not rhs:  # EPSILON production
                     if top_node.abort:
                         continue
                     epsilon_node = Node("epsilon")
@@ -1113,6 +1115,7 @@ class Parser:
                     else:
                         # Create terminal node with proper format
                         if sym.name in {"ID", "NUM"}:
+                            # We'll fill in the actual value when we match the token
                             child = Node(f"({sym.name}, )")
                         elif sym.name in KEYWORDS:
                             child = Node(f"(KEYWORD, {sym.name})")
@@ -1126,12 +1129,11 @@ class Parser:
             else:
                 # no table entry
                 if la in self.follow[A] or la in self.sync_tokens.get(A, set()):
-
-                    self.errors.append(f"#{line} : syntax error, missing {A}")
-                    top_node.abort = True
-                    top_node.hidden = True
-                    #epsilon_node = Node("epsilon")
-                    #top_node.add(epsilon_node)
+                    # Missing nonterminal
+                    if top_sym.name != "Compound-stmt":  # Don't hide Compound-stmt
+                        self.errors.append(f"#{line} : syntax error, missing {A}")
+                        top_node.abort = True
+                        top_node.hidden = True
                     continue
                 else:
                     if la == END:
