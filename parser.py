@@ -204,7 +204,8 @@ class Parser:
     def update_lookahead(self):
         if self.token.type in ['ID', 'NUM', 'EOF']:
             self.lookahead = self.token.type
-            if self.lookahead == 'EOF': self.lookahead = '$'
+            if self.lookahead == 'EOF': 
+                self.lookahead = '$'
         else:
             self.lookahead = self.token.lexeme
 

@@ -14,6 +14,15 @@ class Token:
 class Scanner:
     KEYWORDS = {"break", "else", "for", "if", "int", "return", "void"}
     SYMBOLS = set(";:,[](){}+-*/=<")
+    _STATE_START = 0
+    _STATE_IN_NUM = 1
+    _STATE_IN_ID = 2
+    _STATE_IN_SLASH = 3
+    _STATE_IN_EQ = 4
+    _STATE_IN_COMMENT_LINE = 5
+    _STATE_IN_COMMENT_BLOCK = 6
+    _STATE_IN_COMMENT_BLOCK_STAR = 7
+    _STATE_IN_INVALID_NUM = 8
 
     def __init__(self, filename):
         self.tokens = []
@@ -37,106 +46,151 @@ class Scanner:
         self.n = len(text)
         self.i = 0
         self.line = 1
+        state = self._STATE_START
+        start = 0
 
         while self.i < self.n:
             c = self.text[self.i]
 
-            if self._handle_whitespace(c):
-                continue
-            if self._handle_comment(c):
-                continue
-            if self._handle_number(c):
-                continue
-            if self._handle_identifier(c):
-                continue
-            if self._handle_symbol(c):
+            if state == self._STATE_START:
+                if c in " \t\r\v\f":
+                    self.i += 1
+                    continue
+                if c == "\n":
+                    self.line += 1
+                    self.i += 1
+                    continue
+                if c.isdigit():
+                    start = self.i
+                    state = self._STATE_IN_NUM
+                    self.i += 1
+                    continue
+                if c.isalpha() or c == "_":
+                    start = self.i
+                    state = self._STATE_IN_ID
+                    self.i += 1
+                    continue
+                if c == "/":
+                    state = self._STATE_IN_SLASH
+                    self.i += 1
+                    continue
+                if c == "=":
+                    state = self._STATE_IN_EQ
+                    self.i += 1
+                    continue
+                if c in self.SYMBOLS:
+                    self.tokens.append(Token("SYMBOL", c, self.line))
+                    self.i += 1
+                    continue
+
+                self.errors.append((self.line, c, "Illegal Character"))
+                self.i += 1
                 continue
 
-            self._handle_illegal(c)
+            if state == self._STATE_IN_NUM:
+                if c.isdigit():
+                    self.i += 1
+                    continue
+                if c.isalnum() or c == "_":
+                    state = self._STATE_IN_INVALID_NUM
+                    self.i += 1
+                    continue
+                self.tokens.append(Token("NUM", self.text[start:self.i], self.line))
+                state = self._STATE_START
+                continue
+
+            if state == self._STATE_IN_INVALID_NUM:
+                if c.isalnum() or c == "_":
+                    self.i += 1
+                    continue
+                self.errors.append((self.line, self.text[start:self.i], "Invalid Number"))
+                state = self._STATE_START
+                continue
+
+            if state == self._STATE_IN_ID:
+                if c.isalnum() or c == "_":
+                    self.i += 1
+                    continue
+                lexeme = self.text[start:self.i]
+                token_type = "KEYWORD" if lexeme in self.KEYWORDS else "ID"
+                self.tokens.append(Token(token_type, lexeme, self.line))
+                state = self._STATE_START
+                continue
+
+            if state == self._STATE_IN_SLASH:
+                if self.i >= self.n:
+                    self.tokens.append(Token("SYMBOL", "/", self.line))
+                    state = self._STATE_START
+                    continue
+                if c == "/":
+                    state = self._STATE_IN_COMMENT_LINE
+                    self.i += 1
+                    continue
+                if c == "*":
+                    state = self._STATE_IN_COMMENT_BLOCK
+                    self.i += 1
+                    continue
+                self.tokens.append(Token("SYMBOL", "/", self.line))
+                state = self._STATE_START
+                continue
+
+            if state == self._STATE_IN_EQ:
+                if self.i < self.n and c == "=":
+                    self.tokens.append(Token("SYMBOL", "==", self.line))
+                    self.i += 1
+                    state = self._STATE_START
+                    continue
+                self.tokens.append(Token("SYMBOL", "=", self.line))
+                state = self._STATE_START
+                continue
+
+            if state == self._STATE_IN_COMMENT_LINE:
+                if c == "\n":
+                    self.line += 1
+                    self.i += 1
+                    state = self._STATE_START
+                    continue
+                self.i += 1
+                continue
+
+            if state == self._STATE_IN_COMMENT_BLOCK:
+                if c == "\n":
+                    self.line += 1
+                if c == "*":
+                    state = self._STATE_IN_COMMENT_BLOCK_STAR
+                    self.i += 1
+                    continue
+                self.i += 1
+                continue
+
+            if state == self._STATE_IN_COMMENT_BLOCK_STAR:
+                if c == "/":
+                    self.i += 1
+                    state = self._STATE_START
+                    continue
+                if c == "\n":
+                    self.line += 1
+                if c == "*":
+                    self.i += 1
+                    continue
+                state = self._STATE_IN_COMMENT_BLOCK
+                self.i += 1
+                continue
+
+        if state == self._STATE_IN_NUM:
+            self.tokens.append(Token("NUM", self.text[start:self.i], self.line))
+        elif state == self._STATE_IN_INVALID_NUM:
+            self.errors.append((self.line, self.text[start:self.i], "Invalid Number"))
+        elif state == self._STATE_IN_ID:
+            lexeme = self.text[start:self.i]
+            token_type = "KEYWORD" if lexeme in self.KEYWORDS else "ID"
+            self.tokens.append(Token(token_type, lexeme, self.line))
+        elif state == self._STATE_IN_EQ:
+            self.tokens.append(Token("SYMBOL", "=", self.line))
+        elif state == self._STATE_IN_SLASH:
+            self.tokens.append(Token("SYMBOL", "/", self.line))
 
         self.tokens.append(Token("EOF", "$", self.line))
-
-    def _handle_whitespace(self, c):
-        if c in " \t\r\v\f":
-            self.i += 1
-            return True
-        if c == "\n":
-            self.line += 1
-            self.i += 1
-            return True
-        return False
-
-    def _handle_comment(self, c):
-        if c == "/" and self.i + 1 < self.n:
-            nxt = self.text[self.i + 1]
-
-            # single-line comment
-            if nxt == "/":
-                self.i += 2
-                while self.i < self.n and self.text[self.i] != "\n":
-                    self.i += 1
-                return True
-
-            # multi-line comment
-            if nxt == "*":
-                self.i += 2
-                while self.i < self.n:
-                    if self.text[self.i] == "\n":
-                        self.line += 1
-                    if self.i + 1 < self.n and self.text[self.i:self.i + 2] == "*/":
-                        self.i += 2
-                        break
-                    self.i += 1
-                return True
-
-        return False
-
-    def _handle_number(self, c):
-        if not c.isdigit():
-            return False
-
-        start = self.i
-        while self.i < self.n and self.text[self.i].isdigit():
-            self.i += 1
-
-        if self.i < self.n and (self.text[self.i].isalnum() or self.text[self.i] == "_"):
-            while self.i < self.n and (self.text[self.i].isalnum() or self.text[self.i] == "_"):
-                self.i += 1
-            self.errors.append((self.line, self.text[start:self.i], "Invalid Number"))
-        else:
-            self.tokens.append(Token("NUM", self.text[start:self.i], self.line))
-
-        return True
-
-    def _handle_identifier(self, c):
-        if not (c.isalpha() or c == "_"):
-            return False
-
-        start = self.i
-        while self.i < self.n and (self.text[self.i].isalnum() or self.text[self.i] == "_"):
-            self.i += 1
-
-        lexeme = self.text[start:self.i]
-        token_type = "KEYWORD" if lexeme in self.KEYWORDS else "ID"
-        self.tokens.append(Token(token_type, lexeme, self.line))
-        return True
-
-    def _handle_symbol(self, c):
-        if self.i + 1 < self.n and self.text[self.i:self.i + 2] == "==":
-            self.tokens.append(Token("SYMBOL", "==", self.line))
-            self.i += 2
-            return True
-
-        if c in self.SYMBOLS:
-            self.tokens.append(Token("SYMBOL", c, self.line))
-            self.i += 1
-            return True
-
-        return False
-
-    def _handle_illegal(self, c):
-        self.errors.append((self.line, c, "Illegal Character"))
-        self.i += 1
 
     def get_next_token(self):
         try:
